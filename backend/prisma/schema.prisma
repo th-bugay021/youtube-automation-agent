@@ -1,0 +1,316 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+enum AutomationMode {
+  MANUAL
+  RECOMMEND
+  SEMI_AUTO
+  FULL_AUTO
+}
+
+enum VideoStatus {
+  DRAFT
+  AI_GENERATED
+  PENDING_APPROVAL
+  SCHEDULED
+  UPLOADING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+enum PrivacyStatus {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+enum NotificationType {
+  UPLOAD_SUCCESS
+  UPLOAD_FAILED
+  TOKEN_EXPIRED
+  AI_SUGGESTION_READY
+  QUOTA_WARNING
+  APPROVAL_REQUIRED
+  STUDIO_RENDER_READY
+  STUDIO_RENDER_FAILED
+}
+
+enum VideoStyle {
+  FACELESS
+  ANIMATED
+  SLIDESHOW
+  SCREEN_RECORDING
+}
+
+enum CreationStatus {
+  DRAFT
+  ANALYZING_CHANNEL
+  GENERATING_SCRIPT
+  SCRIPT_READY
+  GENERATING_IMAGES
+  IMAGES_READY
+  GENERATING_AUDIO
+  AUDIO_READY
+  RENDERING
+  RENDERED
+  APPROVED
+  FAILED
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String?
+  avatarUrl     String?
+  role          UserRole @default(OWNER)
+  googleId      String?  @unique
+  passwordHash  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  channels      Channel[]
+  notifications Notification[]
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Channel {
+  id                  String         @id @default(cuid())
+  userId              String
+  youtubeChannelId    String         @unique
+  title               String
+  description         String?
+  thumbnailUrl        String?
+  subscriberCount     Int            @default(0)
+  videoCount          Int            @default(0)
+  viewCount           BigInt         @default(0)
+  niche               String?
+  automationMode      AutomationMode @default(MANUAL)
+  defaultPrivacy      PrivacyStatus  @default(PRIVATE)
+  approvalHoldMinutes Int            @default(60)
+  timezone            String         @default("UTC")
+  isActive            Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  credential  OAuthCredential?
+  videos      Video[]
+  creations   VideoCreation[]
+  analytics   AnalyticsSnapshot[]
+  quotaUsage  YoutubeQuotaUsage[]
+  aiJobs      AiJob[]
+
+  @@index([userId])
+}
+
+model OAuthCredential {
+  id                    String   @id @default(cuid())
+  channelId             String   @unique
+  accessTokenCipher     String
+  refreshTokenCipher    String
+  scope                 String
+  tokenType             String   @default("Bearer")
+  expiresAt             DateTime
+  encryptionVersion     Int      @default(1)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+}
+
+model Video {
+  id              String        @id @default(cuid())
+  channelId       String
+  status          VideoStatus   @default(DRAFT)
+  title           String
+  description     String?
+  tags            String[]
+  hashtags        String[]
+  categoryId      String?
+  privacyStatus   PrivacyStatus @default(PRIVATE)
+  playlistId      String?
+  thumbnailUrl    String?
+  thumbnailPrompt String?
+  videoFilePath   String?
+  youtubeVideoId  String?       @unique
+  publishAt       DateTime?
+  publishedAt     DateTime?
+  failureReason   String?
+  retryCount      Int           @default(0)
+  aiGenerated     Boolean       @default(false)
+  approvedById    String?
+  approvedAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  channel Channel    @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  metrics VideoMetric[]
+  creation VideoCreation?
+
+  @@index([channelId, status])
+  @@index([publishAt])
+}
+
+model VideoMetric {
+  id                String   @id @default(cuid())
+  videoId           String
+  capturedAt        DateTime @default(now())
+  views             BigInt   @default(0)
+  likes             Int      @default(0)
+  comments          Int      @default(0)
+  watchTimeMinutes  Int      @default(0)
+  averageViewPct    Float    @default(0)
+  ctr               Float    @default(0)
+  impressions       BigInt   @default(0)
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, capturedAt])
+}
+
+model AnalyticsSnapshot {
+  id                String   @id @default(cuid())
+  channelId         String
+  capturedAt        DateTime @default(now())
+  dayOfWeek         Int      // 0..6 (UTC)
+  hour              Int      // 0..23 (UTC)
+  views             Int      @default(0)
+  watchTimeMinutes  Int      @default(0)
+  ctr               Float    @default(0)
+  averageViewPct    Float    @default(0)
+  engagementScore   Float    @default(0)
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, dayOfWeek, hour])
+}
+
+model YoutubeQuotaUsage {
+  id        String   @id @default(cuid())
+  channelId String
+  day       DateTime
+  unitsUsed Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, day])
+}
+
+model AiJob {
+  id          String   @id @default(cuid())
+  channelId   String
+  kind        String   // 'idea' | 'title' | 'description' | 'tags' | 'thumbnail' | 'bundle'
+  prompt      String
+  result      Json?
+  tokensIn    Int      @default(0)
+  tokensOut  Int      @default(0)
+  cost       Float     @default(0)
+  status     String    @default("pending") // pending | done | failed
+  error      String?
+  createdAt  DateTime  @default(now())
+  completedAt DateTime?
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, kind, status])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String?
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  resource  String
+  resourceId String?
+  metadata  Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// Multi-step AI Video Creation Studio job.
+/// Owns its generated assets (scenes + audio + render) until the user approves,
+/// at which point it spawns a Video row that the existing publishing pipeline
+/// schedules and uploads.
+model VideoCreation {
+  id              String         @id @default(cuid())
+  channelId       String
+  style           VideoStyle     @default(SLIDESHOW)
+  status          CreationStatus @default(DRAFT)
+  topic           String
+  niche           String?
+  targetSeconds   Int            @default(60)
+
+  // Result of channel intelligence analysis (tone, format, voice, etc.)
+  channelStyle    Json?
+
+  // Array of {index, narration, durationSeconds, imageKeyword, imageUrl, audioUrl}
+  scenes          Json?
+
+  // Storage URLs (Supabase signed URLs)
+  audioUrl        String?
+  musicUrl        String?
+  subtitleUrl     String?
+  renderedUrl     String?
+  thumbnailUrl    String?
+  finalDurationSeconds Float?
+
+  // Approval bridge to existing pipeline
+  videoId         String?        @unique
+  approvedAt      DateTime?
+  failureReason   String?
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  video   Video?  @relation(fields: [videoId], references: [id], onDelete: SetNull)
+
+  @@index([channelId, status])
+}
