@@ -5,7 +5,7 @@ import { api } from '@/lib/api';
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 export default function SettingsPage() {
   const { data: me } = useQuery({
