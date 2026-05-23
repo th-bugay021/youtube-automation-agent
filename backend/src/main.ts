@@ -41,9 +41,17 @@ async function bootstrap() {
   app.useGlobalFilters(new AllExceptionsFilter(logger));
   app.setGlobalPrefix('api');
 
-  const port = config.get<number>('PORT') ?? 4000;
-  await app.listen(port);
+  app.enableShutdownHooks();
+
+  const port = Number(config.get<string>('PORT')) || 4000;
+  await app.listen(port, '0.0.0.0');
   logger.log(`API ready on :${port}`);
 }
 
-bootstrap();
+bootstrap().catch((err) => {
+  // bufferLogs swallows NestFactory errors before useLogger is called,
+  // so write directly to stderr to make Render's runtime log useful.
+  // eslint-disable-next-line no-console
+  console.error('Fatal: failed to start application', err);
+  process.exit(1);
+});
