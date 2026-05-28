@@ -37,8 +37,16 @@ export class AuthController {
     const profile = req.user as unknown as GoogleProfilePayload;
     const user = await this.auth.upsertFromGoogle(profile);
 
-    // Sync linked channels using the freshly issued Google tokens.
-    await this.channels.syncFromGoogleAuth(user.id, profile);
+    // Sync linked channels using the freshly issued Google tokens. Channel
+    // sync is best-effort — never let a YouTube/Prisma hiccup block login.
+    // The service itself swallows recoverable errors; this guards against
+    // anything unexpected so the user always lands on the dashboard.
+    try {
+      await this.channels.syncFromGoogleAuth(user.id, profile);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[AuthController.googleCallback] channel sync failed (non-fatal)', err);
+    }
 
     const tokens = await this.auth.issueTokens(user.id, user.email, user.role);
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken);

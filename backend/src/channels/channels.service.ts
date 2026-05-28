@@ -18,6 +18,13 @@ export class ChannelsService {
   /**
    * After Google OAuth, fetch the YouTube channels the user has authorised,
    * upsert them, and store encrypted OAuth credentials for each.
+   *
+   * This method MUST NOT throw on recoverable conditions (no channels on the
+   * Google account, missing refresh token on re-consent, transient YouTube
+   * API errors). The OAuth callback awaits this before issuing the session
+   * cookie, so any throw here means the user never gets logged in. We log
+   * loudly and return — the dashboard will simply show no channels, and the
+   * user can re-link from settings.
    */
   async syncFromGoogleAuth(userId: string, profile: GoogleProfilePayload): Promise<void> {
     // Diagnostic — remove once OAuth flow is stable
@@ -30,6 +37,11 @@ export class ChannelsService {
       scope: profile.scope,
     });
 
+    if (!profile.accessToken) {
+      console.warn('[ChannelsService.syncFromGoogleAuth] no access token on profile — skipping sync');
+      return;
+    }
+
     const oauth = new google.auth.OAuth2(
       this.config.get<string>('GOOGLE_CLIENT_ID'),
       this.config.get<string>('GOOGLE_CLIENT_SECRET'),
@@ -41,10 +53,26 @@ export class ChannelsService {
     });
 
     const youtube = google.youtube({ version: 'v3', auth: oauth });
-    const resp = await youtube.channels.list({ part: ['snippet', 'statistics'], mine: true });
-    const items = resp.data.items ?? [];
+
+    let items: NonNullable<Awaited<ReturnType<typeof youtube.channels.list>>['data']['items']> = [];
+    try {
+      const resp = await youtube.channels.list({ part: ['snippet', 'statistics'], mine: true });
+      items = resp.data.items ?? [];
+    } catch (err) {
+      console.error('[ChannelsService.syncFromGoogleAuth] youtube.channels.list failed', {
+        userId,
+        message: (err as Error)?.message,
+        stack: (err as Error)?.stack,
+      });
+      return;
+    }
+
     if (items.length === 0) {
-      throw new YoutubeApiError('No YouTube channels found for this Google account');
+      console.warn('[ChannelsService.syncFromGoogleAuth] no YouTube channels on this Google account', {
+        userId,
+        email: profile.email,
+      });
+      return;
     }
 
     const expiresAt = new Date(Date.now() + profile.expiresIn * 1000);
@@ -53,55 +81,76 @@ export class ChannelsService {
       const ytId = item.id;
       if (!ytId) continue;
 
-      const channel = await this.prisma.channel.upsert({
-        where: { youtubeChannelId: ytId },
-        create: {
-          userId,
-          youtubeChannelId: ytId,
-          title: item.snippet?.title ?? 'Untitled channel',
-          description: item.snippet?.description ?? null,
-          thumbnailUrl: item.snippet?.thumbnails?.default?.url ?? null,
-          subscriberCount: Number(item.statistics?.subscriberCount ?? 0),
-          videoCount: Number(item.statistics?.videoCount ?? 0),
-          viewCount: BigInt(item.statistics?.viewCount ?? 0),
-        },
-        update: {
-          title: item.snippet?.title ?? 'Untitled channel',
-          description: item.snippet?.description ?? null,
-          thumbnailUrl: item.snippet?.thumbnails?.default?.url ?? null,
-          subscriberCount: Number(item.statistics?.subscriberCount ?? 0),
-          videoCount: Number(item.statistics?.videoCount ?? 0),
-          viewCount: BigInt(item.statistics?.viewCount ?? 0),
-        },
-      });
-
-      const refreshToken = profile.refreshToken;
-      if (!refreshToken) {
-        // Could occur on a re-consent where Google omits the refresh token.
-        // Skip overwriting an existing valid credential; create one only if absent.
-        const exists = await this.prisma.oAuthCredential.findUnique({
-          where: { channelId: channel.id },
+      try {
+        const channel = await this.prisma.channel.upsert({
+          where: { youtubeChannelId: ytId },
+          create: {
+            userId,
+            youtubeChannelId: ytId,
+            title: item.snippet?.title ?? 'Untitled channel',
+            description: item.snippet?.description ?? null,
+            thumbnailUrl: item.snippet?.thumbnails?.default?.url ?? null,
+            subscriberCount: Number(item.statistics?.subscriberCount ?? 0),
+            videoCount: Number(item.statistics?.videoCount ?? 0),
+            viewCount: BigInt(item.statistics?.viewCount ?? 0),
+          },
+          update: {
+            // youtubeChannelId is globally unique. Re-assign ownership to the
+            // user who just authenticated, otherwise a channel previously
+            // synced under a different user record stays hidden from this one.
+            userId,
+            title: item.snippet?.title ?? 'Untitled channel',
+            description: item.snippet?.description ?? null,
+            thumbnailUrl: item.snippet?.thumbnails?.default?.url ?? null,
+            subscriberCount: Number(item.statistics?.subscriberCount ?? 0),
+            videoCount: Number(item.statistics?.videoCount ?? 0),
+            viewCount: BigInt(item.statistics?.viewCount ?? 0),
+            isActive: true,
+          },
         });
-        if (exists) continue;
-        throw new YoutubeApiError('Google did not return a refresh token. Re-consent required.');
-      }
 
-      await this.prisma.oAuthCredential.upsert({
-        where: { channelId: channel.id },
-        create: {
-          channelId: channel.id,
-          accessTokenCipher: this.crypto.encrypt(profile.accessToken),
-          refreshTokenCipher: this.crypto.encrypt(refreshToken),
-          scope: profile.scope,
-          expiresAt,
-        },
-        update: {
-          accessTokenCipher: this.crypto.encrypt(profile.accessToken),
-          refreshTokenCipher: this.crypto.encrypt(refreshToken),
-          scope: profile.scope,
-          expiresAt,
-        },
-      });
+        const refreshToken = profile.refreshToken;
+        if (!refreshToken) {
+          // Google omits the refresh token on silent re-consent. Keep the
+          // existing credential if we have one; otherwise leave the channel
+          // visible but uncredentialed so the user can re-link from settings.
+          const exists = await this.prisma.oAuthCredential.findUnique({
+            where: { channelId: channel.id },
+          });
+          if (!exists) {
+            console.warn(
+              '[ChannelsService.syncFromGoogleAuth] no refresh token and no existing credential; channel saved without credential',
+              { userId, channelId: channel.id, ytId },
+            );
+          }
+          continue;
+        }
+
+        await this.prisma.oAuthCredential.upsert({
+          where: { channelId: channel.id },
+          create: {
+            channelId: channel.id,
+            accessTokenCipher: this.crypto.encrypt(profile.accessToken),
+            refreshTokenCipher: this.crypto.encrypt(refreshToken),
+            scope: profile.scope,
+            expiresAt,
+          },
+          update: {
+            accessTokenCipher: this.crypto.encrypt(profile.accessToken),
+            refreshTokenCipher: this.crypto.encrypt(refreshToken),
+            scope: profile.scope,
+            expiresAt,
+          },
+        });
+      } catch (err) {
+        // One bad channel shouldn't drop the rest.
+        console.error('[ChannelsService.syncFromGoogleAuth] failed to persist channel', {
+          userId,
+          ytId,
+          message: (err as Error)?.message,
+          stack: (err as Error)?.stack,
+        });
+      }
     }
   }
 
