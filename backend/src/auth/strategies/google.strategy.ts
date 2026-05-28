@@ -14,10 +14,33 @@ const YOUTUBE_SCOPES = [
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
   constructor(config: ConfigService) {
+    const clientID = config.get<string>('GOOGLE_CLIENT_ID');
+    const clientSecret = config.get<string>('GOOGLE_CLIENT_SECRET');
+    const callbackURL = config.get<string>('GOOGLE_REDIRECT_URI');
+
+    if (!clientID) throw new Error('GOOGLE_CLIENT_ID is not set');
+    if (!clientSecret) throw new Error('GOOGLE_CLIENT_SECRET is not set');
+    if (!callbackURL) throw new Error('GOOGLE_REDIRECT_URI is not set');
+
+    // Guard against the most common cause of redirect_uri_mismatch in this app:
+    // a localhost callback URL deployed to a non-localhost environment. The
+    // value passed here is exactly what we send to Google as `redirect_uri`,
+    // and Google rejects any value not whitelisted in the OAuth client.
+    const nodeEnv = config.get<string>('NODE_ENV');
+    if (nodeEnv === 'production' && /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(callbackURL)) {
+      throw new Error(
+        `GOOGLE_REDIRECT_URI points at localhost in production: ${callbackURL}. ` +
+          `Set it to the deployed callback, e.g. https://<api-host>/api/auth/google/callback.`,
+      );
+    }
+
+    // eslint-disable-next-line no-console
+    console.log('[GoogleStrategy] callbackURL =', callbackURL);
+
     super({
-      clientID: config.get<string>('GOOGLE_CLIENT_ID') ?? '',
-      clientSecret: config.get<string>('GOOGLE_CLIENT_SECRET') ?? '',
-      callbackURL: config.get<string>('GOOGLE_REDIRECT_URI') ?? '',
+      clientID,
+      clientSecret,
+      callbackURL,
       scope: YOUTUBE_SCOPES,
       accessType: 'offline',
       prompt: 'consent',
