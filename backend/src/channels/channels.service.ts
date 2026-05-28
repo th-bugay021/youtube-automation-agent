@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { google } from 'googleapis';
+import { google, youtube_v3 } from 'googleapis';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { GoogleProfilePayload } from '../auth/auth.service';
@@ -54,7 +54,7 @@ export class ChannelsService {
 
     const youtube = google.youtube({ version: 'v3', auth: oauth });
 
-    let items: NonNullable<Awaited<ReturnType<typeof youtube.channels.list>>['data']['items']> = [];
+    let items: youtube_v3.Schema$Channel[] = [];
     try {
       const resp = await youtube.channels.list({ part: ['snippet', 'statistics'], mine: true });
       items = resp.data.items ?? [];
