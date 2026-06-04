@@ -5,7 +5,16 @@ import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const ffmpegPath: string = require('@ffmpeg-installer/ffmpeg').path;
+const installerPath: string = require('@ffmpeg-installer/ffmpeg').path;
+
+// Prefer a system ffmpeg when provided (e.g. an apt-installed binary on the
+// deploy host); fall back to the bundled static binary from @ffmpeg-installer.
+const ffmpegPath: string = process.env.FFMPEG_PATH?.trim() || installerPath;
+
+// A single ffmpeg invocation must finish inside this window or it is killed and
+// the render fails cleanly. Kept below the studio stage watchdog (default 10m)
+// so the in-process catch flips the row to FAILED before the watchdog fires.
+const FFMPEG_TIMEOUT_MS = Number(process.env.FFMPEG_TIMEOUT_MS) || 9 * 60 * 1000;
 
 export interface RenderSceneInput {
   imageBuffer: Buffer;
@@ -134,11 +143,37 @@ export class RendererService {
       this.logger.debug({ args }, 'ffmpeg');
       const proc = spawn(ffmpegPath, args, { windowsHide: true });
       let stderr = '';
+      let settled = false;
+
+      // Guard against a hung ffmpeg (e.g. a malformed input it waits forever on).
+      // Without this the promise never resolves, the render stage never returns,
+      // and the creation row is left stuck in RENDERING with no way to recover.
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        proc.kill('SIGKILL');
+        reject(
+          new Error(
+            `ffmpeg timed out after ${FFMPEG_TIMEOUT_MS}ms\n${stderr.slice(-1500)}`,
+          ),
+        );
+      }, FFMPEG_TIMEOUT_MS);
+
       proc.stderr.on('data', (d) => (stderr += d.toString()));
-      proc.on('error', reject);
-      proc.on('close', (code) =>
-        code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}\n${stderr.slice(-1500)}`)),
-      );
+      proc.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+      proc.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        code === 0
+          ? resolve()
+          : reject(new Error(`ffmpeg exit ${code}\n${stderr.slice(-1500)}`));
+      });
     });
   }
 

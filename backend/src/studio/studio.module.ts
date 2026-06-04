@@ -10,6 +10,7 @@ import { MusicService } from './services/music.service';
 import { SubtitlesService } from './services/subtitles.service';
 import { RendererService } from './services/renderer.service';
 import { OrchestratorService } from './services/orchestrator.service';
+import { RenderWatchdogService } from './services/render-watchdog.service';
 import { StudioProcessor } from './processors/studio.processor';
 import { AiModule } from '../ai/ai.module';
 import { ChannelsModule } from '../channels/channels.module';
@@ -36,6 +37,7 @@ import { QUEUE_STUDIO, QUEUE_UPLOADS } from '../queue/queue.constants';
     SubtitlesService,
     RendererService,
     OrchestratorService,
+    RenderWatchdogService,
     StudioProcessor,
   ],
   exports: [StorageService],

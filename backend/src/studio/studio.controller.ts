@@ -107,7 +107,16 @@ export class StudioController {
   async regenerate(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     const creation = await this.getOwned(user.id, id);
     if (creation.status === CreationStatus.RENDERING) {
-      throw new BadRequestException('Already rendering');
+      // Only block if the render is still plausibly alive. A row whose
+      // updatedAt is older than the stuck threshold means the worker died
+      // mid-render (typically OOM) and the row will never advance on its own —
+      // allow the user to re-render immediately instead of waiting for the
+      // watchdog to reap it.
+      const ageMs = Date.now() - creation.updatedAt.getTime();
+      const stuckMs = Number(process.env.RENDER_STUCK_TIMEOUT_MS) || 10 * 60 * 1000;
+      if (ageMs < stuckMs) {
+        throw new BadRequestException('Already rendering');
+      }
     }
     await this.prisma.videoCreation.update({
       where: { id },
