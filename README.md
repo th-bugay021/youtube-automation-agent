@@ -19,7 +19,7 @@ A production-grade semi-autonomous YouTube content management system.
 - Redis 7+
 
 ### Setup
-`ash
+```bash
 # Clone & install
 cd backend && npm install
 cd ../frontend && npm install
@@ -29,12 +29,12 @@ cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env.local
 
 # Run migrations
-cd backend && npm run migration:run
+cd backend && npm run prisma:deploy
 
 # Start dev
 cd backend && npm run start:dev
 cd frontend && npm run dev
-`
+```
 
 ## Architecture
 See docs/ARCHITECTURE.md for full system design.

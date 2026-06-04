@@ -2,9 +2,8 @@
 
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { googleAuthUrl } from '@/lib/api';
 import { Sparkles } from 'lucide-react';
-
-const API = process.env.NEXT_PUBLIC_API_URL;
 
 export default function LoginPage() {
   return (
@@ -17,7 +16,7 @@ export default function LoginPage() {
         <p className="mt-2 text-sm text-muted">
           Sign in with Google to link your YouTube channels and start automating.
         </p>
-        <a href={`${API}/api/auth/google`} className="mt-6 block">
+        <a href={googleAuthUrl} className="mt-6 block">
           <Button className="w-full" size="lg">Continue with Google</Button>
         </a>
         <p className="mt-6 text-xs text-muted">

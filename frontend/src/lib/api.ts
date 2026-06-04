@@ -1,7 +1,11 @@
 import axios, { AxiosError } from 'axios';
 
+const apiOrigin = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '');
+export const apiBaseUrl = apiOrigin ? `${apiOrigin}/api` : '/api';
+export const googleAuthUrl = `${apiBaseUrl}/auth/google`;
+
 export const api = axios.create({
-  baseURL: '/api',
+  baseURL: apiBaseUrl,
   withCredentials: true,
 });
 

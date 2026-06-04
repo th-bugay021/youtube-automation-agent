@@ -1,11 +1,9 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { api, googleAuthUrl } from '@/lib/api';
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-
-const API = process.env.NEXT_PUBLIC_API_URL;
 
 export default function SettingsPage() {
   const { data: me } = useQuery({
@@ -39,7 +37,7 @@ export default function SettingsPage() {
           Re-running the Google flow will add any new channels your account owns and refresh
           stored credentials for existing ones.
         </p>
-        <a href={`${API}/api/auth/google`}>
+        <a href={googleAuthUrl}>
           <Button>Connect Google</Button>
         </a>
       </Card>

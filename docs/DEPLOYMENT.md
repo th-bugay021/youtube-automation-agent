@@ -14,6 +14,8 @@
 2. Add a Postgres plugin (or use Neon and paste the connection string into `DATABASE_URL`).
 3. Add a Redis plugin (or use Upstash and paste into `REDIS_URL`).
 4. Set env vars (see `backend/.env.example`). Mirror **all** values across both services.
+   - For separate frontend/backend hosts, set `COOKIE_SECURE=true` and `COOKIE_SAME_SITE=none`.
+   - Leave `COOKIE_DOMAIN` empty unless both services use a shared parent domain you control.
 5. Open a one-off shell on the API service and run `npm run prisma:deploy` to apply migrations.
 
 ## Google Cloud / YouTube API
@@ -44,5 +46,5 @@ Use the output as `TOKEN_ENCRYPTION_KEY`. **Rotating this key invalidates every 
 - [ ] `npm run prisma:deploy` succeeds on the backend.
 - [ ] `GET /api/auth/me` returns 401 (proves the auth pipeline is wired).
 - [ ] Visiting the frontend `/login` and clicking Google completes and lands on `/dashboard`.
-- [ ] After login, `GET /api/users/me/channels` returns the channels you authorised.
+- [ ] After login, `GET ${BACKEND_URL}/api/channels` returns the channels you authorised.
 - [ ] Worker logs show `Worker ready`.

@@ -36,6 +36,15 @@ export class AuthError extends DomainError {
   }
 }
 
+export class RedirectError extends Error {
+  constructor(
+    public readonly location: string,
+    public readonly redirectStatus: number = HttpStatus.FOUND,
+  ) {
+    super('Redirect');
+  }
+}
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   constructor(private readonly logger: Logger) {}
@@ -44,6 +53,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const res = ctx.getResponse<Response>();
     const req = ctx.getRequest<Request>();
+
+    if (exception instanceof RedirectError) {
+      res.redirect(exception.redirectStatus, exception.location);
+      return;
+    }
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let code = 'INTERNAL';
