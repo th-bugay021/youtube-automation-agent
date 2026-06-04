@@ -52,7 +52,7 @@ export class AuthController {
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken);
 
     const frontend = this.config.get<string>('FRONTEND_ORIGIN');
-    res.redirect(`${frontend}/dashboard`);
+    res.redirect(`${frontend}/dashboard?auth=google&sync=channels`);
   }
 
   @Post('refresh')

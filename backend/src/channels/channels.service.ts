@@ -155,7 +155,10 @@ export class ChannelsService {
   }
 
   async listForUser(userId: string) {
-    return this.prisma.channel.findMany({ where: { userId } });
+    return this.prisma.channel.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   async getOwned(userId: string, channelId: string) {
