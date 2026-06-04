@@ -24,8 +24,13 @@ async function bootstrap() {
   app.use(helmet());
   app.use(cookieParser(config.get<string>('COOKIE_SECRET') ?? config.get<string>('JWT_SECRET')));
 
+  // The browser's Origin header never has a trailing slash. If FRONTEND_ORIGIN
+  // is configured with one, the CORS check fails to match and the response
+  // carries no Access-Control-Allow-Origin — silently blocking every
+  // credentialed cross-site request from the Vercel frontend.
+  const frontendOrigin = config.get<string>('FRONTEND_ORIGIN')?.replace(/\/$/, '');
   app.enableCors({
-    origin: config.get<string>('FRONTEND_ORIGIN'),
+    origin: frontendOrigin,
     credentials: true,
   });
 

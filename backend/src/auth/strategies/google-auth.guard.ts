@@ -1,4 +1,4 @@
-import { ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AuthGuard } from '@nestjs/passport';
 import { Request } from 'express';
@@ -8,6 +8,22 @@ import { RedirectError } from '../../common/filters/all-exceptions.filter';
 export class GoogleAuthGuard extends AuthGuard('google') {
   constructor(private readonly config: ConfigService) {
     super();
+  }
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    try {
+      return (await super.canActivate(context)) as boolean;
+    } catch (err) {
+      const req = context.switchToHttp().getRequest<Request>();
+      if (!this.isCallback(req)) throw err;
+
+      const reason = this.failureReason(err);
+
+      // eslint-disable-next-line no-console
+      console.warn('[GoogleAuthGuard] OAuth callback exchange failed', { reason });
+
+      throw new RedirectError(this.loginUrl(reason));
+    }
   }
 
   handleRequest<TUser = unknown>(

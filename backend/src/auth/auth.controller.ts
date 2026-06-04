@@ -108,8 +108,10 @@ export class AuthController {
     const isProduction = this.config.get<string>('NODE_ENV') === 'production';
 
     if (configured === 'true') return true;
-    // SameSite=None cookies are ignored by browsers unless they are Secure.
-    if (configured === 'false') return isProduction;
+    if (configured === 'false') return false;
+    // Default: secure in production. A SameSite=None cookie (cross-site
+    // Vercel→Render) is ignored by browsers unless it is also Secure, so the
+    // two must move together — see cookieSameSite below.
     return isProduction;
   }
 
@@ -118,9 +120,15 @@ export class AuthController {
     if (configured === 'lax' || configured === 'strict') return configured;
     if (configured === 'none') return secure ? 'none' : 'lax';
 
+    // No explicit config: infer. A cross-origin frontend (different host from
+    // this API) needs SameSite=None so the browser sends the auth cookie on
+    // requests from the Vercel origin. None requires Secure; if we can't be
+    // secure (local http), fall back to lax to keep same-site dev working.
     const frontend = this.config.get<string>('FRONTEND_ORIGIN');
-    const callback = this.config.get<string>('GOOGLE_REDIRECT_URI');
-    const crossOrigin = this.urlHost(frontend) !== this.urlHost(callback);
+    const apiOrigin =
+      this.config.get<string>('PUBLIC_API_ORIGIN') ??
+      this.config.get<string>('GOOGLE_REDIRECT_URI');
+    const crossOrigin = this.urlHost(frontend) !== this.urlHost(apiOrigin);
     return secure && crossOrigin ? 'none' : 'lax';
   }
 
