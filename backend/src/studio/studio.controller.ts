@@ -113,7 +113,7 @@ export class StudioController {
       // allow the user to re-render immediately instead of waiting for the
       // watchdog to reap it.
       const ageMs = Date.now() - creation.updatedAt.getTime();
-      const stuckMs = Number(process.env.RENDER_STUCK_TIMEOUT_MS) || 10 * 60 * 1000;
+      const stuckMs = Number(process.env.RENDER_STUCK_TIMEOUT_MS) || 15 * 60 * 1000;
       if (ageMs < stuckMs) {
         throw new BadRequestException('Already rendering');
       }

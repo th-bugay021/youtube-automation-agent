@@ -1,187 +1,189 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { spawn } from 'child_process';
-import { promises as fs } from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { randomUUID } from 'crypto';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const installerPath: string = require('@ffmpeg-installer/ffmpeg').path;
-
-// Prefer a system ffmpeg when provided (e.g. an apt-installed binary on the
-// deploy host); fall back to the bundled static binary from @ffmpeg-installer.
-const ffmpegPath: string = process.env.FFMPEG_PATH?.trim() || installerPath;
-
-// A single ffmpeg invocation must finish inside this window or it is killed and
-// the render fails cleanly. Kept below the studio stage watchdog (default 10m)
-// so the in-process catch flips the row to FAILED before the watchdog fires.
-const FFMPEG_TIMEOUT_MS = Number(process.env.FFMPEG_TIMEOUT_MS) || 9 * 60 * 1000;
+import { DomainError } from '../../common/filters/all-exceptions.filter';
 
 export interface RenderSceneInput {
-  imageBuffer: Buffer;
+  imageUrl: string;
   durationSeconds: number;
 }
 
 export interface RenderInput {
   scenes: RenderSceneInput[];
-  voiceoverBuffer: Buffer;
-  musicBuffer: Buffer | null;
-  subtitleSrt: string;
+  voiceoverUrl: string;
+  musicUrl?: string | null;
+  totalDurationSeconds: number;
 }
 
 export interface RenderResult {
-  videoBuffer: Buffer;
-  thumbnailBuffer: Buffer;
+  videoUrl: string;
   durationSeconds: number;
 }
 
-const RESOLUTION = { w: 1920, h: 1080 };
-const FPS = 30;
+// Shotstack has two fully separate stacks, each with its own API key:
+//   stage → https://api.shotstack.io/edit/stage  (free, watermark-free, for dev)
+//   v1    → https://api.shotstack.io/edit/v1      (production)
+// SHOTSTACK_ENV selects which; the key must match the environment.
+const HOSTS: Record<string, string> = {
+  stage: 'https://api.shotstack.io/edit/stage',
+  v1: 'https://api.shotstack.io/edit/v1',
+};
+
+const POLL_INTERVAL_MS = 10_000;
+const POLL_TIMEOUT_MS = Number(process.env.SHOTSTACK_TIMEOUT_MS) || 10 * 60 * 1000;
+
+// Background music sits well under the voiceover.
+const MUSIC_VOLUME = 0.08;
 
 /**
- * Renders a slideshow video from per-scene images + voiceover + optional
- * music + burned-in subtitles using FFmpeg.
+ * Renders a slideshow video from per-scene image URLs + a voiceover URL +
+ * optional background-music URL using the Shotstack cloud render API.
  *
- * Pipeline (single ffmpeg invocation):
- *   1. For each scene, load image as a fixed-duration video segment with Ken Burns zoom.
- *   2. Concatenate the segments.
- *   3. Mix voiceover with background music (music at -22 dB so it sits under speech).
- *   4. Burn the SRT subtitles into the video stream.
- *   5. Encode H.264 + AAC, MP4 container.
+ * This replaces the previous local-FFmpeg pipeline, which exhausted memory on
+ * Render's free tier. All heavy lifting now happens on Shotstack's
+ * infrastructure; this service only builds the timeline JSON, submits it, and
+ * polls until the hosted MP4 is ready. The caller is responsible for copying
+ * the returned URL's bytes into permanent storage if it needs them there.
  */
 @Injectable()
 export class RendererService {
   private readonly logger = new Logger(RendererService.name);
 
-  async render(input: RenderInput): Promise<RenderResult> {
-    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-render-'));
-    try {
-      const imagePaths: string[] = [];
-      for (let i = 0; i < input.scenes.length; i++) {
-        const p = path.join(workDir, `scene-${i.toString().padStart(3, '0')}.jpg`);
-        await fs.writeFile(p, input.scenes[i].imageBuffer);
-        imagePaths.push(p);
-      }
-
-      const voicePath = path.join(workDir, 'voice.mp3');
-      await fs.writeFile(voicePath, input.voiceoverBuffer);
-
-      let musicPath: string | null = null;
-      if (input.musicBuffer) {
-        musicPath = path.join(workDir, 'music.mp3');
-        await fs.writeFile(musicPath, input.musicBuffer);
-      }
-
-      const srtPath = path.join(workDir, 'subs.srt');
-      await fs.writeFile(srtPath, input.subtitleSrt, 'utf8');
-
-      const concatFile = path.join(workDir, 'concat.txt');
-      const concatLines: string[] = [];
-      for (let i = 0; i < imagePaths.length; i++) {
-        concatLines.push(`file '${imagePaths[i].replace(/'/g, "'\\''")}'`);
-        concatLines.push(`duration ${input.scenes[i].durationSeconds.toFixed(3)}`);
-      }
-      // ffmpeg concat demuxer requires the last image listed again without a duration.
-      concatLines.push(`file '${imagePaths[imagePaths.length - 1].replace(/'/g, "'\\''")}'`);
-      await fs.writeFile(concatFile, concatLines.join('\n'));
-
-      const totalDuration = input.scenes.reduce((a, s) => a + s.durationSeconds, 0);
-      const outputPath = path.join(workDir, 'out.mp4');
-      const subEscaped = this.escapeFilterPath(srtPath);
-      const videoFilter = `scale=${RESOLUTION.w}:${RESOLUTION.h}:force_original_aspect_ratio=increase,crop=${RESOLUTION.w}:${RESOLUTION.h},fps=${FPS},subtitles='${subEscaped}'`;
-
-      const args: string[] = [
-        '-y',
-        '-f', 'concat', '-safe', '0', '-i', concatFile,
-        '-i', voicePath,
-      ];
-      if (musicPath) args.push('-i', musicPath);
-
-      args.push('-filter_complex');
-      if (musicPath) {
-        args.push(
-          `[0:v]${videoFilter}[v];` +
-          `[2:a]volume=0.08[bg];` +
-          `[1:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]`,
-        );
-        args.push('-map', '[v]', '-map', '[a]');
-      } else {
-        args.push(`[0:v]${videoFilter}[v]`);
-        args.push('-map', '[v]', '-map', '1:a');
-      }
-
-      args.push(
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-shortest',
-        '-t', totalDuration.toFixed(3),
-        outputPath,
+  private get apiKey(): string {
+    const key = process.env.SHOTSTACK_API_KEY?.trim();
+    if (!key) {
+      throw new DomainError(
+        'SHOTSTACK_NOT_CONFIGURED',
+        'SHOTSTACK_API_KEY must be set to render videos',
+        500,
       );
-
-      await this.runFfmpeg(args);
-
-      const videoBuffer = await fs.readFile(outputPath);
-
-      // Use the first scene's image as the thumbnail (already 16:9-cropped).
-      const thumbPath = path.join(workDir, 'thumb.jpg');
-      await this.runFfmpeg([
-        '-y', '-i', outputPath, '-vf', `thumbnail,scale=${RESOLUTION.w}:${RESOLUTION.h}`,
-        '-frames:v', '1', thumbPath,
-      ]);
-      const thumbnailBuffer = await fs.readFile(thumbPath);
-
-      return { videoBuffer, thumbnailBuffer, durationSeconds: totalDuration };
-    } finally {
-      await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
     }
+    return key;
   }
 
-  private runFfmpeg(args: string[]): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.logger.debug({ args }, 'ffmpeg');
-      const proc = spawn(ffmpegPath, args, { windowsHide: true });
-      let stderr = '';
-      let settled = false;
+  private get host(): string {
+    const env = process.env.SHOTSTACK_ENV?.trim() || 'stage';
+    return HOSTS[env] ?? HOSTS.stage;
+  }
 
-      // Guard against a hung ffmpeg (e.g. a malformed input it waits forever on).
-      // Without this the promise never resolves, the render stage never returns,
-      // and the creation row is left stuck in RENDERING with no way to recover.
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        proc.kill('SIGKILL');
-        reject(
-          new Error(
-            `ffmpeg timed out after ${FFMPEG_TIMEOUT_MS}ms\n${stderr.slice(-1500)}`,
-          ),
-        );
-      }, FFMPEG_TIMEOUT_MS);
+  async render(input: RenderInput): Promise<RenderResult> {
+    const timeline = this.buildTimeline(input);
+    const renderId = await this.submit(timeline);
+    this.logger.log(`Shotstack render submitted: ${renderId}`);
+    const url = await this.poll(renderId);
+    this.logger.log(`Shotstack render ${renderId} done`);
+    return { videoUrl: url, durationSeconds: input.totalDurationSeconds };
+  }
 
-      proc.stderr.on('data', (d) => (stderr += d.toString()));
-      proc.on('error', (err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(err);
-      });
-      proc.on('close', (code) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        code === 0
-          ? resolve()
-          : reject(new Error(`ffmpeg exit ${code}\n${stderr.slice(-1500)}`));
-      });
+  private buildTimeline(input: RenderInput): Record<string, unknown> {
+    let cursor = 0;
+    const imageClips = input.scenes.map((scene) => {
+      const clip = {
+        asset: { type: 'image', src: scene.imageUrl },
+        start: Number(cursor.toFixed(3)),
+        length: Number(scene.durationSeconds.toFixed(3)),
+        fit: 'cover',
+        effect: 'zoomIn',
+      };
+      cursor += scene.durationSeconds;
+      return clip;
     });
+
+    const tracks: Record<string, unknown>[] = [
+      // Tracks render top-first; the images are the only visual track.
+      { clips: imageClips },
+      {
+        clips: [
+          {
+            asset: { type: 'audio', src: input.voiceoverUrl },
+            start: 0,
+            length: Number(input.totalDurationSeconds.toFixed(3)),
+          },
+        ],
+      },
+    ];
+
+    if (input.musicUrl) {
+      tracks.push({
+        clips: [
+          {
+            asset: { type: 'audio', src: input.musicUrl, volume: MUSIC_VOLUME },
+            start: 0,
+            length: Number(input.totalDurationSeconds.toFixed(3)),
+          },
+        ],
+      });
+    }
+
+    return {
+      timeline: { background: '#000000', tracks },
+      output: { format: 'mp4', resolution: '1080' },
+    };
   }
 
-  /**
-   * FFmpeg's subtitles filter requires forward slashes and escaped colons on Windows.
-   * Example: `C:\Users\foo\subs.srt` → `C\\:/Users/foo/subs.srt`
-   */
-  private escapeFilterPath(p: string): string {
-    return p.replace(/\\/g, '/').replace(/:/g, '\\:');
+  private async submit(timeline: Record<string, unknown>): Promise<string> {
+    const res = await fetch(`${this.host}/render`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': this.apiKey,
+      },
+      body: JSON.stringify(timeline),
+    });
+
+    const body = (await res.json().catch(() => null)) as
+      | { success?: boolean; message?: string; response?: { id?: string } }
+      | null;
+
+    if (!res.ok || !body?.response?.id) {
+      throw new DomainError(
+        'SHOTSTACK_SUBMIT',
+        `Shotstack submit failed (${res.status}): ${body?.message ?? 'unknown error'}`,
+        502,
+      );
+    }
+    return body.response.id;
+  }
+
+  private async poll(renderId: string): Promise<string> {
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+
+    while (Date.now() < deadline) {
+      await this.sleep(POLL_INTERVAL_MS);
+
+      const res = await fetch(`${this.host}/render/${renderId}`, {
+        headers: { 'x-api-key': this.apiKey },
+      });
+      const body = (await res.json().catch(() => null)) as
+        | { response?: { status?: string; url?: string; error?: string } }
+        | null;
+
+      const status = body?.response?.status;
+      this.logger.debug(`Shotstack render ${renderId}: ${status ?? 'unknown'}`);
+
+      if (status === 'done') {
+        const url = body?.response?.url;
+        if (!url) {
+          throw new DomainError('SHOTSTACK_NO_URL', 'Render done but no URL returned', 502);
+        }
+        return url;
+      }
+      if (status === 'failed') {
+        throw new DomainError(
+          'SHOTSTACK_FAILED',
+          `Shotstack render failed: ${body?.response?.error ?? 'unknown'}`,
+          502,
+        );
+      }
+      // queued | fetching | rendering | saving → keep polling
+    }
+
+    throw new DomainError(
+      'SHOTSTACK_TIMEOUT',
+      `Shotstack render ${renderId} did not finish within ${POLL_TIMEOUT_MS}ms`,
+      504,
+    );
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

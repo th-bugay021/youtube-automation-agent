@@ -115,20 +115,41 @@ export class OrchestratorService {
       });
 
       await this.setStatus(creationId, CreationStatus.RENDERING);
-      const result = await this.renderer.render({
-        scenes: sceneImages.map((si) => ({
-          imageBuffer: si.buffer,
+
+      // Shotstack fetches assets over HTTP, so give it signed URLs valid well
+      // past the render+poll window (images, voice, music live in Supabase).
+      const RENDER_URL_TTL = 2 * 60 * 60; // 2h
+      const sceneRenderInputs = await Promise.all(
+        sceneImages.map(async (si) => ({
+          imageUrl: await this.storage.signedUrl(si.path, RENDER_URL_TTL),
           durationSeconds: si.scene.durationSeconds,
         })),
-        voiceoverBuffer: voiceBuf,
-        musicBuffer: musicBuf,
-        subtitleSrt: srt,
+      );
+      const voiceUrl = await this.storage.signedUrl(voicePath, RENDER_URL_TTL);
+      const musicSignedUrl = musicStoragePath
+        ? await this.storage.signedUrl(musicStoragePath, RENDER_URL_TTL)
+        : null;
+
+      const result = await this.renderer.render({
+        scenes: sceneRenderInputs,
+        voiceoverUrl: voiceUrl,
+        musicUrl: musicSignedUrl,
+        totalDurationSeconds: totalSeconds,
       });
 
+      // Copy the hosted MP4 into Supabase so the downstream YouTube-upload
+      // pipeline (which reads `supabase://<id>/final.mp4`) is unchanged.
+      const renderResp = await fetch(result.videoUrl);
+      if (!renderResp.ok) {
+        throw new Error(`Failed to download Shotstack output: ${renderResp.status}`);
+      }
+      const videoBuffer = Buffer.from(await renderResp.arrayBuffer());
+
       const renderPath = `${creationId}/final.mp4`;
-      await this.storage.upload(renderPath, result.videoBuffer, 'video/mp4');
+      await this.storage.upload(renderPath, videoBuffer, 'video/mp4');
+      // Reuse the first scene image (already 16:9 source) as the thumbnail.
       const thumbPath = `${creationId}/thumbnail.jpg`;
-      await this.storage.upload(thumbPath, result.thumbnailBuffer, 'image/jpeg');
+      await this.storage.upload(thumbPath, sceneImages[0].buffer, 'image/jpeg');
 
       await this.prisma.videoCreation.update({
         where: { id: creationId },

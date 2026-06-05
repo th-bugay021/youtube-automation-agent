@@ -5,10 +5,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 
 // A creation that has sat in RENDERING longer than this is presumed dead — the
-// worker was almost certainly OOM-killed mid-render, so its in-process catch
-// (which would otherwise flip the row to FAILED) never ran. Keep this above the
-// ffmpeg timeout so a merely-slow render isn't reaped while still progressing.
-const STUCK_RENDER_MS = Number(process.env.RENDER_STUCK_TIMEOUT_MS) || 10 * 60 * 1000;
+// worker died mid-render (e.g. crash, redeploy) so its in-process catch (which
+// would otherwise flip the row to FAILED) never ran. Keep this above the
+// Shotstack poll timeout so a merely-slow render isn't reaped while in flight.
+const STUCK_RENDER_MS = Number(process.env.RENDER_STUCK_TIMEOUT_MS) || 15 * 60 * 1000;
 
 @Injectable()
 export class RenderWatchdogService {
