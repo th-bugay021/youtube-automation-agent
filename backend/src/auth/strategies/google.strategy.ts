@@ -88,6 +88,24 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
     const email = profile.emails?.[0]?.value;
     if (!email) return done(new Error('Google account has no email'), false);
 
+    // Sign-in allowlist. When ALLOWED_EMAILS is empty the app is open; when set,
+    // only the listed addresses (or whole domains, prefixed with @) may sign in.
+    // Returning done(err, false) is handled by GoogleAuthGuard, which redirects
+    // the user to /login?error=google_oauth&reason=email_not_allowed.
+    const allow = (process.env.ALLOWED_EMAILS ?? '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    if (allow.length > 0) {
+      const addr = email.toLowerCase();
+      const domain = addr.split('@')[1] ?? '';
+      const permitted = allow.includes(addr) || allow.includes(`@${domain}`);
+      if (!permitted) {
+        console.warn('[GoogleStrategy.validate] sign-in blocked: email not in ALLOWED_EMAILS');
+        return done(new Error('email_not_allowed'), false);
+      }
+    }
+
     const payload = {
       googleId: profile.id,
       email,
