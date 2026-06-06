@@ -30,6 +30,13 @@ const HOSTS: Record<string, string> = {
 const POLL_INTERVAL_MS = 10_000;
 const POLL_TIMEOUT_MS = Number(process.env.SHOTSTACK_TIMEOUT_MS) || 10 * 60 * 1000;
 
+// A single HTTP call to Shotstack must complete within this window. Without it,
+// a stalled connection (DNS, blocked egress, dropped keep-alive socket) leaves
+// fetch pending forever — the render row never advances and only the 15-minute
+// watchdog eventually reaps it. Failing fast turns that silent hang into a
+// logged, actionable error that flips the creation to FAILED immediately.
+const HTTP_TIMEOUT_MS = Number(process.env.SHOTSTACK_HTTP_TIMEOUT_MS) || 30_000;
+
 // Background music sits well under the voiceover.
 const MUSIC_VOLUME = 0.08;
 
@@ -71,6 +78,68 @@ export class RendererService {
     const url = await this.poll(renderId);
     this.logger.log(`Shotstack render ${renderId} done`);
     return { videoUrl: url, durationSeconds: input.totalDurationSeconds };
+  }
+
+  /** Masks all but the last 4 chars of the API key for safe logging. */
+  private maskedKey(): string {
+    const k = this.apiKey;
+    return k.length <= 4 ? '****' : `${'*'.repeat(k.length - 4)}${k.slice(-4)}`;
+  }
+
+  /**
+   * fetch wrapper with a hard timeout + full request/response logging. A hung
+   * connection is the most likely reason a render never reaches Shotstack, so
+   * we abort after HTTP_TIMEOUT_MS and surface the cause instead of hanging.
+   */
+  private async fetchJson(
+    url: string,
+    init: { method: string; headers: Record<string, string>; body?: string },
+  ): Promise<{ status: number; ok: boolean; json: any; text: string }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+
+    // Log the exact outgoing request. The API key is masked; everything else
+    // (URL, headers, body) is shown verbatim to aid debugging.
+    this.logger.log(
+      `[Shotstack] -> ${init.method} ${url}\n` +
+        `  headers: ${JSON.stringify({ ...init.headers, 'x-api-key': this.maskedKey() })}\n` +
+        `  body: ${init.body ?? '(none)'}`,
+    );
+
+    const startedAt = Date.now();
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      const text = await res.text();
+      let json: any = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        json = null;
+      }
+
+      this.logger.log(
+        `[Shotstack] <- ${res.status} ${res.statusText} (${Date.now() - startedAt}ms) ${url}\n` +
+          `  body: ${text || '(empty)'}`,
+      );
+
+      return { status: res.status, ok: res.ok, json, text };
+    } catch (err) {
+      const aborted = (err as Error)?.name === 'AbortError';
+      this.logger.error(
+        `[Shotstack] FAILED ${init.method} ${url} ${
+          aborted ? `timed out after ${HTTP_TIMEOUT_MS}ms` : 'request error'
+        } (${Date.now() - startedAt}ms): ${(err as Error)?.message}`,
+      );
+      throw new DomainError(
+        aborted ? 'SHOTSTACK_HTTP_TIMEOUT' : 'SHOTSTACK_HTTP_ERROR',
+        aborted
+          ? `Shotstack request to ${url} timed out after ${HTTP_TIMEOUT_MS}ms — the API was never reached`
+          : `Shotstack request to ${url} failed: ${(err as Error)?.message}`,
+        502,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private buildTimeline(input: RenderInput): Record<string, unknown> {
@@ -120,7 +189,12 @@ export class RendererService {
   }
 
   private async submit(timeline: Record<string, unknown>): Promise<string> {
-    const res = await fetch(`${this.host}/render`, {
+    const url = `${this.host}/render`;
+    this.logger.log(
+      `[Shotstack] submitting render to env=${process.env.SHOTSTACK_ENV?.trim() || 'stage'} host=${this.host}`,
+    );
+
+    const { ok, status, json } = await this.fetchJson(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -129,47 +203,42 @@ export class RendererService {
       body: JSON.stringify(timeline),
     });
 
-    const body = (await res.json().catch(() => null)) as
-      | { success?: boolean; message?: string; response?: { id?: string } }
-      | null;
-
-    if (!res.ok || !body?.response?.id) {
+    if (!ok || !json?.response?.id) {
       throw new DomainError(
         'SHOTSTACK_SUBMIT',
-        `Shotstack submit failed (${res.status}): ${body?.message ?? 'unknown error'}`,
+        `Shotstack submit failed (${status}): ${json?.message ?? 'no render id in response'}`,
         502,
       );
     }
-    return body.response.id;
+    return json.response.id as string;
   }
 
   private async poll(renderId: string): Promise<string> {
+    const url = `${this.host}/render/${renderId}`;
     const deadline = Date.now() + POLL_TIMEOUT_MS;
 
     while (Date.now() < deadline) {
       await this.sleep(POLL_INTERVAL_MS);
 
-      const res = await fetch(`${this.host}/render/${renderId}`, {
+      const { json } = await this.fetchJson(url, {
+        method: 'GET',
         headers: { 'x-api-key': this.apiKey },
       });
-      const body = (await res.json().catch(() => null)) as
-        | { response?: { status?: string; url?: string; error?: string } }
-        | null;
 
-      const status = body?.response?.status;
-      this.logger.debug(`Shotstack render ${renderId}: ${status ?? 'unknown'}`);
+      const status = json?.response?.status as string | undefined;
+      this.logger.log(`[Shotstack] render ${renderId} status=${status ?? 'unknown'}`);
 
       if (status === 'done') {
-        const url = body?.response?.url;
-        if (!url) {
+        const out = json?.response?.url;
+        if (!out) {
           throw new DomainError('SHOTSTACK_NO_URL', 'Render done but no URL returned', 502);
         }
-        return url;
+        return out as string;
       }
       if (status === 'failed') {
         throw new DomainError(
           'SHOTSTACK_FAILED',
-          `Shotstack render failed: ${body?.response?.error ?? 'unknown'}`,
+          `Shotstack render failed: ${json?.response?.error ?? 'unknown'}`,
           502,
         );
       }
