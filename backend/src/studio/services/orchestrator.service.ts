@@ -87,12 +87,34 @@ export class OrchestratorService {
       });
 
       await this.setStatus(creationId, CreationStatus.GENERATING_AUDIO);
-      const fullNarration = scenes.map((s) => s.narration).join(' ');
-      const totalSeconds = scenes.reduce((a, s) => a + s.durationSeconds, 0);
-      const voiceBuf = await this.tts.synthesize(fullNarration, totalSeconds);
-      const voicePath = `${creationId}/audio/voice.mp3`;
-      await this.storage.upload(voicePath, voiceBuf, 'audio/mpeg');
 
+      // Per-scene voiceover: each scene gets its own gTTS clip. The measured
+      // audio length becomes the scene's on-screen duration (with a small floor
+      // and tail pad) so the image stays up exactly as long as its narration.
+      const MIN_SCENE_SECONDS = 2;
+      const TAIL_PAD_SECONDS = 0.4;
+      // Space out per-scene TTS calls to avoid tripping gTTS rate limits.
+      const SCENE_TTS_DELAY_MS = Number(process.env.TTS_SCENE_DELAY_MS) || 600;
+      for (let i = 0; i < sceneImages.length; i++) {
+        const si = sceneImages[i];
+        const { buffer, durationSeconds } = await this.tts.synthesizeScene(
+          si.scene.narration,
+          si.scene.durationSeconds,
+        );
+        const audioPath = `${creationId}/audio/scene-${si.scene.index}.mp3`;
+        await this.storage.upload(audioPath, buffer, 'audio/mpeg');
+        // Mutate the authoritative duration so subtitles, totals, and the
+        // render timeline all agree on the real narration length.
+        si.scene.durationSeconds = Number(
+          Math.max(MIN_SCENE_SECONDS, durationSeconds + TAIL_PAD_SECONDS).toFixed(3),
+        );
+        if (i < sceneImages.length - 1 && SCENE_TTS_DELAY_MS > 0) {
+          await new Promise((resolve) => setTimeout(resolve, SCENE_TTS_DELAY_MS));
+        }
+      }
+      const totalSeconds = sceneImages.reduce((a, si) => a + si.scene.durationSeconds, 0);
+
+      const fullNarration = scenes.map((s) => s.narration).join(' ');
       const { trackId, buffer: musicBuf } = await this.music.pickTrack(fullNarration);
       let musicStoragePath: string | undefined;
       if (musicBuf) {
@@ -100,14 +122,23 @@ export class OrchestratorService {
         await this.storage.upload(musicStoragePath, musicBuf, 'audio/mpeg');
       }
 
+      // Subtitles + scene URLs use the now-updated per-scene durations.
       const srt = this.subtitles.build(scenes);
       const srtPath = `${creationId}/subs.srt`;
       await this.storage.upload(srtPath, Buffer.from(srt, 'utf8'), 'application/x-subrip');
 
+      const scenesWithAudio = await Promise.all(
+        sceneImages.map(async (si) => ({
+          ...si.scene,
+          imageUrl: await this.storage.signedUrl(si.path),
+          audioUrl: await this.storage.signedUrl(`${creationId}/audio/scene-${si.scene.index}.mp3`),
+        })),
+      );
       await this.prisma.videoCreation.update({
         where: { id: creationId },
         data: {
-          audioUrl: await this.storage.signedUrl(voicePath),
+          scenes: scenesWithAudio as any,
+          audioUrl: scenesWithAudio[0]?.audioUrl ?? null,
           musicUrl: musicStoragePath ? await this.storage.signedUrl(musicStoragePath) : null,
           subtitleUrl: await this.storage.signedUrl(srtPath),
           status: CreationStatus.AUDIO_READY,
@@ -117,22 +148,25 @@ export class OrchestratorService {
       await this.setStatus(creationId, CreationStatus.RENDERING);
 
       // Shotstack fetches assets over HTTP, so give it signed URLs valid well
-      // past the render+poll window (images, voice, music live in Supabase).
+      // past the render+poll window (images, per-scene voice, music live in
+      // Supabase).
       const RENDER_URL_TTL = 2 * 60 * 60; // 2h
       const sceneRenderInputs = await Promise.all(
         sceneImages.map(async (si) => ({
           imageUrl: await this.storage.signedUrl(si.path, RENDER_URL_TTL),
+          audioUrl: await this.storage.signedUrl(
+            `${creationId}/audio/scene-${si.scene.index}.mp3`,
+            RENDER_URL_TTL,
+          ),
           durationSeconds: si.scene.durationSeconds,
         })),
       );
-      const voiceUrl = await this.storage.signedUrl(voicePath, RENDER_URL_TTL);
       const musicSignedUrl = musicStoragePath
         ? await this.storage.signedUrl(musicStoragePath, RENDER_URL_TTL)
         : null;
 
       const result = await this.renderer.render({
         scenes: sceneRenderInputs,
-        voiceoverUrl: voiceUrl,
         musicUrl: musicSignedUrl,
         totalDurationSeconds: totalSeconds,
       });

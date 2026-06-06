@@ -3,12 +3,12 @@ import { DomainError } from '../../common/filters/all-exceptions.filter';
 
 export interface RenderSceneInput {
   imageUrl: string;
+  audioUrl: string;
   durationSeconds: number;
 }
 
 export interface RenderInput {
   scenes: RenderSceneInput[];
-  voiceoverUrl: string;
   musicUrl?: string | null;
   totalDurationSeconds: number;
 }
@@ -143,31 +143,35 @@ export class RendererService {
   }
 
   private buildTimeline(input: RenderInput): Record<string, unknown> {
+    // Each scene contributes an image clip and its own voiceover clip, both
+    // starting at the same cursor and lasting the scene's duration, so the
+    // narration stays in sync with the image it describes.
     let cursor = 0;
-    const imageClips = input.scenes.map((scene) => {
-      const clip = {
+    const imageClips: Record<string, unknown>[] = [];
+    const voiceClips: Record<string, unknown>[] = [];
+
+    for (const scene of input.scenes) {
+      const start = Number(cursor.toFixed(3));
+      const length = Number(scene.durationSeconds.toFixed(3));
+      imageClips.push({
         asset: { type: 'image', src: scene.imageUrl },
-        start: Number(cursor.toFixed(3)),
-        length: Number(scene.durationSeconds.toFixed(3)),
+        start,
+        length,
         fit: 'cover',
         effect: 'zoomIn',
-      };
+      });
+      voiceClips.push({
+        asset: { type: 'audio', src: scene.audioUrl },
+        start,
+        length,
+      });
       cursor += scene.durationSeconds;
-      return clip;
-    });
+    }
 
     const tracks: Record<string, unknown>[] = [
-      // Tracks render top-first; the images are the only visual track.
+      // Tracks render top-first; images are the visual track, voice below.
       { clips: imageClips },
-      {
-        clips: [
-          {
-            asset: { type: 'audio', src: input.voiceoverUrl },
-            start: 0,
-            length: Number(input.totalDurationSeconds.toFixed(3)),
-          },
-        ],
-      },
+      { clips: voiceClips },
     ];
 
     if (input.musicUrl) {
