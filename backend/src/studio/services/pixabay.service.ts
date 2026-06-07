@@ -41,6 +41,15 @@ interface PixabayVideoResponse {
   hits: PixabayVideoHit[];
 }
 
+// Faceless scenes download a stock video per scene into memory before uploading
+// to storage. On a 512MB instance the `large` rendition (tens of MB, transiently
+// doubled by Buffer.from) can OOM-kill the process mid-job — the job then hangs
+// at GENERATING_IMAGES instead of failing. We therefore pick the highest-res
+// rendition whose file size is under this budget, and hard-cap the actual
+// download as a backstop. A 720p clip upscaled by Shotstack is fine for b-roll.
+const MAX_CLIP_BYTES = Number(process.env.PIXABAY_MAX_CLIP_BYTES) || 25 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES = Number(process.env.PIXABAY_MAX_DOWNLOAD_BYTES) || 45 * 1024 * 1024;
+
 /**
  * Searches Pixabay for stock images and videos by keyword. Free, ~100 RPS limit.
  * Falls back to a generic search term if the specific keyword returns nothing.
@@ -136,16 +145,39 @@ export class PixabayService {
     }
   }
 
-  /** Highest-quality rendition Pixabay returned, largest first. */
+  /**
+   * Picks a memory-safe rendition: the highest-resolution file whose size is
+   * within MAX_CLIP_BYTES. If every rendition is over budget (or Pixabay omits
+   * sizes), falls back to the smallest available so we still get a clip rather
+   * than risking an OOM on the largest.
+   */
   private pickRendition(hit: PixabayVideoHit): string | null {
-    const v = hit.videos;
-    return v.large?.url ?? v.medium?.url ?? v.small?.url ?? v.tiny?.url ?? null;
+    const files = [hit.videos.large, hit.videos.medium, hit.videos.small, hit.videos.tiny].filter(
+      (f): f is PixabayVideoFile => !!f?.url,
+    );
+    if (files.length === 0) return null;
+
+    const area = (f: PixabayVideoFile) => (f.width || 0) * (f.height || 0);
+    const underBudget = files.filter((f) => f.size > 0 && f.size <= MAX_CLIP_BYTES);
+    if (underBudget.length > 0) {
+      // Best quality that still fits the budget.
+      underBudget.sort((a, b) => area(b) - area(a));
+      return underBudget[0].url;
+    }
+    // Nothing within budget (or sizes unknown): take the smallest by bytes, or
+    // by resolution when bytes are missing.
+    files.sort((a, b) => (a.size || area(a)) - (b.size || area(b)));
+    return files[0].url;
   }
 
   private async downloadAsBuffer(url: string): Promise<Buffer> {
     const { data } = await axios.get<ArrayBuffer>(url, {
       responseType: 'arraybuffer',
       timeout: 30_000,
+      // Backstop against a rendition that lies about its size: abort rather than
+      // buffer an unbounded body into memory.
+      maxContentLength: MAX_DOWNLOAD_BYTES,
+      maxBodyLength: MAX_DOWNLOAD_BYTES,
     });
     return Buffer.from(data);
   }
