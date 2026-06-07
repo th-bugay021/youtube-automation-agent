@@ -54,6 +54,7 @@ export class UploadsProcessor extends WorkerHost {
     });
 
     let tempPath: string | null = null;
+    let tempThumbPath: string | null = null;
     try {
       // Studio-rendered videos store a `supabase://<path>` reference. The
       // YouTube upload API needs a real file on disk, so we materialise it
@@ -67,12 +68,24 @@ export class UploadsProcessor extends WorkerHost {
         localPath = tempPath;
       }
 
+      // Thumbnails: studio renders store a signed Supabase URL, so any http(s)
+      // URL is downloaded to a temp file (the YouTube thumbnails.set API streams
+      // from disk). A non-http value is treated as an existing local path.
+      // A thumbnail failure must never block the video publish.
       let thumbnailPath: string | undefined;
-      if (video.thumbnailUrl?.includes('/storage/v1/object/sign/')) {
-        // Studio thumbnails are signed URLs; download to a temp file.
-        // For URL thumbnails from elsewhere we'd fetch via axios first.
-        thumbnailPath = undefined;
-      } else if (video.thumbnailUrl && !video.thumbnailUrl.startsWith('http')) {
+      if (video.thumbnailUrl?.startsWith('http')) {
+        try {
+          const resp = await fetch(video.thumbnailUrl);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          tempThumbPath = path.join(os.tmpdir(), `thumb-${videoId}.jpg`);
+          await fs.writeFile(tempThumbPath, Buffer.from(await resp.arrayBuffer()));
+          thumbnailPath = tempThumbPath;
+        } catch (err) {
+          this.logger.warn(
+            `Thumbnail download failed for ${videoId} (${(err as Error).message}); publishing without a custom thumbnail`,
+          );
+        }
+      } else if (video.thumbnailUrl) {
         thumbnailPath = video.thumbnailUrl;
       }
 
@@ -122,6 +135,7 @@ export class UploadsProcessor extends WorkerHost {
       throw err;
     } finally {
       if (tempPath) await fs.unlink(tempPath).catch(() => undefined);
+      if (tempThumbPath) await fs.unlink(tempThumbPath).catch(() => undefined);
     }
   }
 

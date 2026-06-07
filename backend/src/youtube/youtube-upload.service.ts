@@ -64,6 +64,10 @@ export class YoutubeUploadService {
     await this.quota.recordUpload(input.channelId);
 
     if (input.thumbnailPath) {
+      // Non-fatal: the video is already inserted. Custom thumbnails require a
+      // verified channel and can 403; failing here would mark the publish failed
+      // and trigger a retry that re-uploads the whole video (duplicates). Log
+      // and move on instead.
       try {
         await youtube.thumbnails.set({
           videoId,
@@ -71,7 +75,9 @@ export class YoutubeUploadService {
         });
         await this.quota.record(input.channelId, 50);
       } catch (err) {
-        throw new YoutubeApiError('Thumbnail upload failed', (err as Error).message);
+        this.logger.warn(
+          `Thumbnail set failed for video ${videoId} (channel may be unverified): ${(err as Error).message}`,
+        );
       }
     }
 
