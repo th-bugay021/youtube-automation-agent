@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { createReadStream, statSync } from 'fs';
 import { YoutubeClientFactory } from './youtube-client.factory';
 import { YoutubeQuotaService } from './youtube-quota.service';
@@ -24,6 +24,8 @@ export interface UploadResult {
 
 @Injectable()
 export class YoutubeUploadService {
+  private readonly logger = new Logger(YoutubeUploadService.name);
+
   constructor(
     private readonly clientFactory: YoutubeClientFactory,
     private readonly quota: YoutubeQuotaService,
