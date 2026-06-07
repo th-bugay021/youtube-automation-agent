@@ -17,8 +17,32 @@ interface PixabayResponse {
   hits: PixabayHit[];
 }
 
+interface PixabayVideoFile {
+  url: string;
+  width: number;
+  height: number;
+  size: number;
+}
+
+interface PixabayVideoHit {
+  id: number;
+  duration: number;
+  tags: string;
+  videos: {
+    large?: PixabayVideoFile;
+    medium?: PixabayVideoFile;
+    small?: PixabayVideoFile;
+    tiny?: PixabayVideoFile;
+  };
+}
+
+interface PixabayVideoResponse {
+  total: number;
+  hits: PixabayVideoHit[];
+}
+
 /**
- * Searches Pixabay for stock images by keyword. Free, ~100 RPS limit.
+ * Searches Pixabay for stock images and videos by keyword. Free, ~100 RPS limit.
  * Falls back to a generic search term if the specific keyword returns nothing.
  */
 @Injectable()
@@ -43,6 +67,25 @@ export class PixabayService {
     throw new DomainError('PIXABAY_NO_RESULTS', `No images found for "${keyword}"`, 502);
   }
 
+  /**
+   * Finds a stock video clip for the keyword and returns its bytes. Prefers a
+   * clip at least `minDurationSeconds` long so it fills the scene's timeline
+   * slot without freezing on the last frame. Falls back through a looser term
+   * and finally a generic cinematic search.
+   */
+  async searchAndDownloadVideo(keyword: string, minDurationSeconds = 0): Promise<Buffer> {
+    if (!this.apiKey) {
+      throw new DomainError('PIXABAY_NOT_CONFIGURED', 'PIXABAY_KEY env var is required', 500);
+    }
+
+    const candidates = [keyword, this.fallbackTerm(keyword), 'cinematic background'];
+    for (const term of candidates) {
+      const url = await this.searchFirstVideo(term, minDurationSeconds);
+      if (url) return this.downloadAsBuffer(url);
+    }
+    throw new DomainError('PIXABAY_NO_RESULTS', `No videos found for "${keyword}"`, 502);
+  }
+
   private async searchFirst(query: string): Promise<string | null> {
     try {
       const { data } = await axios.get<PixabayResponse>('https://pixabay.com/api/', {
@@ -63,6 +106,40 @@ export class PixabayService {
       this.logger.warn({ err, query }, 'Pixabay search failed');
       return null;
     }
+  }
+
+  private async searchFirstVideo(query: string, minDuration: number): Promise<string | null> {
+    try {
+      const { data } = await axios.get<PixabayVideoResponse>('https://pixabay.com/api/videos/', {
+        params: {
+          key: this.apiKey,
+          q: query,
+          safesearch: 'true',
+          per_page: 10,
+        },
+        timeout: 15_000,
+      });
+      const hits = data.hits ?? [];
+      if (hits.length === 0) return null;
+      // Prefer a clip long enough to cover the scene; otherwise take the longest
+      // available so the freeze-on-last-frame gap is as small as possible.
+      const ordered = [...hits].sort((a, b) => {
+        const aOk = a.duration >= minDuration ? 0 : 1;
+        const bOk = b.duration >= minDuration ? 0 : 1;
+        if (aOk !== bOk) return aOk - bOk;
+        return b.duration - a.duration;
+      });
+      return this.pickRendition(ordered[0]);
+    } catch (err) {
+      this.logger.warn({ err, query }, 'Pixabay video search failed');
+      return null;
+    }
+  }
+
+  /** Highest-quality rendition Pixabay returned, largest first. */
+  private pickRendition(hit: PixabayVideoHit): string | null {
+    const v = hit.videos;
+    return v.large?.url ?? v.medium?.url ?? v.small?.url ?? v.tiny?.url ?? null;
   }
 
   private async downloadAsBuffer(url: string): Promise<Buffer> {

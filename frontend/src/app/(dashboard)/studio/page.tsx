@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { formatDate } from '@/lib/utils';
 import { STATUS_LABELS, VideoCreation, VideoStyle } from '@/lib/studio-types';
-import { Film, Sparkles, ImageIcon, Monitor } from 'lucide-react';
+import { Film, ImageIcon } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Channel {
@@ -28,7 +28,7 @@ const STYLE_OPTIONS: {
   {
     id: 'FACELESS',
     label: 'Faceless',
-    description: 'Voiceover over stock imagery — the classic AI YouTube style.',
+    description: 'Voiceover over stock video clips — the classic AI YouTube style.',
     icon: Film,
     status: 'full',
   },
@@ -39,20 +39,9 @@ const STYLE_OPTIONS: {
     icon: ImageIcon,
     status: 'full',
   },
-  {
-    id: 'ANIMATED',
-    label: 'Animated',
-    description: 'Motion graphics — renders as slideshow for now.',
-    icon: Sparkles,
-    status: 'preview',
-  },
-  {
-    id: 'SCREEN_RECORDING',
-    label: 'Screen Recording',
-    description: 'Walkthrough-style — renders as slideshow for now.',
-    icon: Monitor,
-    status: 'preview',
-  },
+  // Animated and Screen Recording are intentionally hidden until those
+  // pipelines are ready — adding them back is just a matter of restoring the
+  // entries here (and their icon imports).
 ];
 
 export default function StudioIndexPage() {
@@ -119,7 +108,7 @@ export default function StudioIndexPage() {
             <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted">
               Video style
             </label>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2">
               {STYLE_OPTIONS.map((opt) => {
                 const Icon = opt.icon;
                 const active = style === opt.id;

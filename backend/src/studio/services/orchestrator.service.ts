@@ -48,6 +48,9 @@ export class OrchestratorService {
       await this.storage.ensureBucket();
 
       const creation = await this.setStatus(creationId, CreationStatus.ANALYZING_CHANNEL);
+      // Faceless videos use stock video clips per scene; every other style
+      // (slideshow, and the preview styles) uses still images.
+      const isFaceless = creation.style === 'FACELESS';
       const style = await this.intelligence.analyze(creation.channelId);
       await this.prisma.videoCreation.update({
         where: { id: creationId },
@@ -68,18 +71,41 @@ export class OrchestratorService {
       });
 
       await this.setStatus(creationId, CreationStatus.GENERATING_IMAGES);
-      const sceneImages: { scene: Scene; buffer: Buffer; path: string }[] = [];
+      // Each scene gets a visual asset: a stock video clip (faceless) or a still
+      // image (slideshow). `isVideo` drives both the render timeline and the
+      // public scene URL field downstream.
+      const sceneAssets: { scene: Scene; path: string; isVideo: boolean }[] = [];
+      let thumbnailBuffer: Buffer | undefined;
       for (const scene of scenes) {
-        const buf = await this.pixabay.searchAndDownload(scene.imageKeyword);
-        const storagePath = `${creationId}/images/scene-${scene.index}.jpg`;
-        await this.storage.upload(storagePath, buf, 'image/jpeg');
-        sceneImages.push({ scene, buffer: buf, path: storagePath });
+        if (isFaceless) {
+          const buf = await this.pixabay.searchAndDownloadVideo(
+            scene.imageKeyword,
+            scene.durationSeconds,
+          );
+          const storagePath = `${creationId}/clips/scene-${scene.index}.mp4`;
+          await this.storage.upload(storagePath, buf, 'video/mp4');
+          sceneAssets.push({ scene, path: storagePath, isVideo: true });
+        } else {
+          const buf = await this.pixabay.searchAndDownload(scene.imageKeyword);
+          const storagePath = `${creationId}/images/scene-${scene.index}.jpg`;
+          await this.storage.upload(storagePath, buf, 'image/jpeg');
+          if (!thumbnailBuffer) thumbnailBuffer = buf;
+          sceneAssets.push({ scene, path: storagePath, isVideo: false });
+        }
+      }
+      // Faceless videos have no still frames to reuse, so fetch one stock image
+      // for the thumbnail. Non-fatal: a missing thumbnail just falls back to the
+      // one YouTube auto-generates.
+      if (isFaceless) {
+        thumbnailBuffer = await this.pixabay
+          .searchAndDownload(scenes[0].imageKeyword)
+          .catch(() => undefined);
       }
       const scenesWithUrls = await Promise.all(
-        sceneImages.map(async (si) => ({
-          ...si.scene,
-          imageUrl: await this.storage.signedUrl(si.path),
-        })),
+        sceneAssets.map(async (sa) => {
+          const url = await this.storage.signedUrl(sa.path);
+          return { ...sa.scene, ...(sa.isVideo ? { videoUrl: url } : { imageUrl: url }) };
+        }),
       );
       await this.prisma.videoCreation.update({
         where: { id: creationId },
@@ -95,8 +121,8 @@ export class OrchestratorService {
       const TAIL_PAD_SECONDS = 0.4;
       // Space out per-scene TTS calls to avoid tripping gTTS rate limits.
       const SCENE_TTS_DELAY_MS = Number(process.env.TTS_SCENE_DELAY_MS) || 600;
-      for (let i = 0; i < sceneImages.length; i++) {
-        const si = sceneImages[i];
+      for (let i = 0; i < sceneAssets.length; i++) {
+        const si = sceneAssets[i];
         const { buffer, durationSeconds } = await this.tts.synthesizeScene(
           si.scene.narration,
           si.scene.durationSeconds,
@@ -108,11 +134,11 @@ export class OrchestratorService {
         si.scene.durationSeconds = Number(
           Math.max(MIN_SCENE_SECONDS, durationSeconds + TAIL_PAD_SECONDS).toFixed(3),
         );
-        if (i < sceneImages.length - 1 && SCENE_TTS_DELAY_MS > 0) {
+        if (i < sceneAssets.length - 1 && SCENE_TTS_DELAY_MS > 0) {
           await new Promise((resolve) => setTimeout(resolve, SCENE_TTS_DELAY_MS));
         }
       }
-      const totalSeconds = sceneImages.reduce((a, si) => a + si.scene.durationSeconds, 0);
+      const totalSeconds = sceneAssets.reduce((a, si) => a + si.scene.durationSeconds, 0);
 
       const fullNarration = scenes.map((s) => s.narration).join(' ');
       const { trackId, buffer: musicBuf } = await this.music.pickTrack(fullNarration);
@@ -128,11 +154,14 @@ export class OrchestratorService {
       await this.storage.upload(srtPath, Buffer.from(srt, 'utf8'), 'application/x-subrip');
 
       const scenesWithAudio = await Promise.all(
-        sceneImages.map(async (si) => ({
-          ...si.scene,
-          imageUrl: await this.storage.signedUrl(si.path),
-          audioUrl: await this.storage.signedUrl(`${creationId}/audio/scene-${si.scene.index}.mp3`),
-        })),
+        sceneAssets.map(async (sa) => {
+          const url = await this.storage.signedUrl(sa.path);
+          return {
+            ...sa.scene,
+            ...(sa.isVideo ? { videoUrl: url } : { imageUrl: url }),
+            audioUrl: await this.storage.signedUrl(`${creationId}/audio/scene-${sa.scene.index}.mp3`),
+          };
+        }),
       );
       await this.prisma.videoCreation.update({
         where: { id: creationId },
@@ -152,14 +181,17 @@ export class OrchestratorService {
       // Supabase).
       const RENDER_URL_TTL = 2 * 60 * 60; // 2h
       const sceneRenderInputs = await Promise.all(
-        sceneImages.map(async (si) => ({
-          imageUrl: await this.storage.signedUrl(si.path, RENDER_URL_TTL),
-          audioUrl: await this.storage.signedUrl(
-            `${creationId}/audio/scene-${si.scene.index}.mp3`,
-            RENDER_URL_TTL,
-          ),
-          durationSeconds: si.scene.durationSeconds,
-        })),
+        sceneAssets.map(async (sa) => {
+          const assetUrl = await this.storage.signedUrl(sa.path, RENDER_URL_TTL);
+          return {
+            ...(sa.isVideo ? { videoUrl: assetUrl } : { imageUrl: assetUrl }),
+            audioUrl: await this.storage.signedUrl(
+              `${creationId}/audio/scene-${sa.scene.index}.mp3`,
+              RENDER_URL_TTL,
+            ),
+            durationSeconds: sa.scene.durationSeconds,
+          };
+        }),
       );
       const musicSignedUrl = musicStoragePath
         ? await this.storage.signedUrl(musicStoragePath, RENDER_URL_TTL)
@@ -181,15 +213,20 @@ export class OrchestratorService {
 
       const renderPath = `${creationId}/final.mp4`;
       await this.storage.upload(renderPath, videoBuffer, 'video/mp4');
-      // Reuse the first scene image (already 16:9 source) as the thumbnail.
-      const thumbPath = `${creationId}/thumbnail.jpg`;
-      await this.storage.upload(thumbPath, sceneImages[0].buffer, 'image/jpeg');
+      // Thumbnail: a stock still (slideshow reuses scene 1's image; faceless
+      // fetched one separately). Skipped if none was available.
+      let thumbnailUrl: string | null = null;
+      if (thumbnailBuffer) {
+        const thumbPath = `${creationId}/thumbnail.jpg`;
+        await this.storage.upload(thumbPath, thumbnailBuffer, 'image/jpeg');
+        thumbnailUrl = await this.storage.signedUrl(thumbPath, 7 * 24 * 3600);
+      }
 
       await this.prisma.videoCreation.update({
         where: { id: creationId },
         data: {
           renderedUrl: await this.storage.signedUrl(renderPath, 7 * 24 * 3600),
-          thumbnailUrl: await this.storage.signedUrl(thumbPath, 7 * 24 * 3600),
+          thumbnailUrl,
           finalDurationSeconds: result.durationSeconds,
           status: CreationStatus.RENDERED,
         },

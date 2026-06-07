@@ -121,7 +121,16 @@ export default function StudioWizardPage() {
             {scenes.map((scene, idx) => (
               <div key={scene.index} className="grid gap-3 rounded-lg border border-border bg-bg/40 p-3 sm:grid-cols-[160px_1fr]">
                 <div>
-                  {scene.imageUrl ? (
+                  {scene.videoUrl ? (
+                    <video
+                      src={scene.videoUrl}
+                      muted
+                      loop
+                      playsInline
+                      autoPlay
+                      className="aspect-video w-full rounded object-cover"
+                    />
+                  ) : scene.imageUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={scene.imageUrl}

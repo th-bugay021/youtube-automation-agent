@@ -2,7 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { DomainError } from '../../common/filters/all-exceptions.filter';
 
 export interface RenderSceneInput {
-  imageUrl: string;
+  /** Still image for slideshow-style scenes. Mutually exclusive with videoUrl. */
+  imageUrl?: string;
+  /** Stock video clip for faceless scenes. Takes precedence over imageUrl. */
+  videoUrl?: string;
   audioUrl: string;
   durationSeconds: number;
 }
@@ -143,23 +146,42 @@ export class RendererService {
   }
 
   private buildTimeline(input: RenderInput): Record<string, unknown> {
-    // Each scene contributes an image clip and its own voiceover clip, both
-    // starting at the same cursor and lasting the scene's duration, so the
-    // narration stays in sync with the image it describes.
+    // Each scene contributes a visual clip (a stock video for faceless videos,
+    // or a still image for slideshows) and its own voiceover clip, both starting
+    // at the same cursor and lasting the scene's duration, so the narration stays
+    // in sync with what's on screen.
     let cursor = 0;
-    const imageClips: Record<string, unknown>[] = [];
+    const visualClips: Record<string, unknown>[] = [];
     const voiceClips: Record<string, unknown>[] = [];
 
     for (const scene of input.scenes) {
       const start = Number(cursor.toFixed(3));
       const length = Number(scene.durationSeconds.toFixed(3));
-      imageClips.push({
-        asset: { type: 'image', src: scene.imageUrl },
-        start,
-        length,
-        fit: 'cover',
-        effect: 'zoomIn',
-      });
+      if (scene.videoUrl) {
+        // Mute the stock clip's own audio (volume 0) so only the voiceover is
+        // heard. The clip is trimmed to the scene length; no Ken Burns effect
+        // since the footage already moves.
+        visualClips.push({
+          asset: { type: 'video', src: scene.videoUrl, volume: 0 },
+          start,
+          length,
+          fit: 'cover',
+        });
+      } else if (scene.imageUrl) {
+        visualClips.push({
+          asset: { type: 'image', src: scene.imageUrl },
+          start,
+          length,
+          fit: 'cover',
+          effect: 'zoomIn',
+        });
+      } else {
+        throw new DomainError(
+          'RENDER_SCENE_NO_VISUAL',
+          `Scene at ${start}s has neither imageUrl nor videoUrl`,
+          500,
+        );
+      }
       voiceClips.push({
         asset: { type: 'audio', src: scene.audioUrl },
         start,
@@ -169,8 +191,8 @@ export class RendererService {
     }
 
     const tracks: Record<string, unknown>[] = [
-      // Tracks render top-first; images are the visual track, voice below.
-      { clips: imageClips },
+      // Tracks render top-first; visuals are the top track, voice below.
+      { clips: visualClips },
       { clips: voiceClips },
     ];
 

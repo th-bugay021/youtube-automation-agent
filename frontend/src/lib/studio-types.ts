@@ -20,6 +20,7 @@ export interface Scene {
   durationSeconds: number;
   imageKeyword: string;
   imageUrl?: string;
+  videoUrl?: string;
 }
 
 export interface VideoCreation {
