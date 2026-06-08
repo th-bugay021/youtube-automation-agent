@@ -22,5 +22,17 @@ export class UpdateChannelDto {
 
   @IsOptional()
   @IsString()
+  defaultTone?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultFormat?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultHookStyle?: string;
+
+  @IsOptional()
+  @IsString()
   timezone?: string;
 }

@@ -30,6 +30,9 @@ export interface VideoCreation {
   status: CreationStatus;
   topic: string;
   niche?: string | null;
+  tone?: string | null;
+  format?: string | null;
+  hookStyle?: string | null;
   targetSeconds: number;
   channelStyle?: Record<string, unknown> | null;
   scenes?: Scene[] | null;
@@ -60,6 +63,21 @@ export const STATUS_LABELS: Record<CreationStatus, string> = {
   APPROVED: 'Scheduled',
   FAILED: 'Failed',
 };
+
+/**
+ * Format values the channel-style analyzer emits (see backend
+ * intelligence.service). Offered as a dropdown so manual overrides line up with
+ * what the script generator expects. An empty value means "let the AI decide".
+ */
+export const FORMAT_OPTIONS = [
+  'tutorial',
+  'listicle',
+  'story',
+  'reaction',
+  'analysis',
+  'news',
+  'mixed',
+] as const;
 
 export const STATUS_PROGRESS: Record<CreationStatus, number> = {
   DRAFT: 5,

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { CreationStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { IntelligenceService } from './intelligence.service';
+import { IntelligenceService, ChannelStyleProfile } from './intelligence.service';
 import { ScriptService, Scene } from './script.service';
 import { PixabayService } from './pixabay.service';
 import { TtsService } from './tts.service';
@@ -51,7 +51,19 @@ export class OrchestratorService {
       // Faceless videos use stock video clips per scene; every other style
       // (slideshow, and the preview styles) uses still images.
       const isFaceless = creation.style === 'FACELESS';
-      const style = await this.intelligence.analyze(creation.channelId);
+      const auto = await this.intelligence.analyze(creation.channelId);
+
+      // Apply manual style overrides on top of the auto-detected profile, with
+      // precedence: per-video (creation) value > saved channel default >
+      // auto-detected. This lets users correct a mis-detected niche/tone/etc.
+      const channel = await this.prisma.channel.findUnique({ where: { id: creation.channelId } });
+      const style: ChannelStyleProfile = {
+        ...auto,
+        niche: creation.niche ?? channel?.niche ?? auto.niche,
+        tone: creation.tone ?? channel?.defaultTone ?? auto.tone,
+        format: creation.format ?? channel?.defaultFormat ?? auto.format,
+        hookStyle: creation.hookStyle ?? channel?.defaultHookStyle ?? auto.hookStyle,
+      };
       await this.prisma.videoCreation.update({
         where: { id: creationId },
         data: { channelStyle: style as any },

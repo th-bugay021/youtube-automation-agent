@@ -9,13 +9,17 @@ import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { formatDate } from '@/lib/utils';
-import { STATUS_LABELS, VideoCreation, VideoStyle } from '@/lib/studio-types';
-import { Film, ImageIcon } from 'lucide-react';
+import { FORMAT_OPTIONS, STATUS_LABELS, VideoCreation, VideoStyle } from '@/lib/studio-types';
+import { ChevronDown, Film, ImageIcon } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Channel {
   id: string;
   title: string;
+  niche?: string | null;
+  defaultTone?: string | null;
+  defaultFormat?: string | null;
+  defaultHookStyle?: string | null;
 }
 
 const STYLE_OPTIONS: {
@@ -61,9 +65,33 @@ export default function StudioIndexPage() {
   const [topic, setTopic] = useState('');
   const [targetSeconds, setTargetSeconds] = useState(60);
 
+  // Optional per-video style overrides. Pre-filled from the selected channel's
+  // saved defaults; whatever is sent takes precedence over channel defaults and
+  // auto-detection during generation. Left blank → the AI decides.
+  const [niche, setNiche] = useState('');
+  const [tone, setTone] = useState('');
+  const [format, setFormat] = useState('');
+  const [hookStyle, setHookStyle] = useState('');
+  const [showStyle, setShowStyle] = useState(false);
+
+  const selectChannel = (id: string) => {
+    setChannelId(id);
+    const ch = (channels ?? []).find((c) => c.id === id);
+    setNiche(ch?.niche ?? '');
+    setTone(ch?.defaultTone ?? '');
+    setFormat(ch?.defaultFormat ?? '');
+    setHookStyle(ch?.defaultHookStyle ?? '');
+  };
+
   const create = useMutation({
-    mutationFn: async () =>
-      (await api.post<VideoCreation>('/studio/creations', { channelId, style, topic, targetSeconds })).data,
+    mutationFn: async () => {
+      const payload: Record<string, unknown> = { channelId, style, topic, targetSeconds };
+      if (niche.trim()) payload.niche = niche.trim();
+      if (tone.trim()) payload.tone = tone.trim();
+      if (format.trim()) payload.format = format.trim();
+      if (hookStyle.trim()) payload.hookStyle = hookStyle.trim();
+      return (await api.post<VideoCreation>('/studio/creations', payload)).data;
+    },
     onSuccess: (c) => {
       toast.success('Creation started');
       router.push(`/studio/${c.id}`);
@@ -94,7 +122,7 @@ export default function StudioIndexPage() {
             </label>
             <select
               value={channelId}
-              onChange={(e) => setChannelId(e.target.value)}
+              onChange={(e) => selectChannel(e.target.value)}
               className="h-10 w-full max-w-md rounded-lg border border-border bg-bg px-3 text-sm"
             >
               <option value="">Pick a channel…</option>
@@ -171,6 +199,85 @@ export default function StudioIndexPage() {
             <div className="mt-1 flex max-w-md justify-between text-[10px] text-muted">
               <span>15s</span><span>60s</span><span>2m</span><span>5m</span>
             </div>
+          </div>
+
+          <div className="rounded-xl border border-border">
+            <button
+              type="button"
+              onClick={() => setShowStyle((s) => !s)}
+              className="flex w-full items-center justify-between px-4 py-3 text-left"
+            >
+              <div>
+                <span className="text-sm font-medium">Style settings</span>
+                <span className="ml-2 text-xs text-muted">optional — overrides channel defaults</span>
+              </div>
+              <ChevronDown
+                className={`size-4 text-muted transition ${showStyle ? 'rotate-180' : ''}`}
+              />
+            </button>
+
+            {showStyle && (
+              <div className="space-y-4 border-t border-border px-4 py-4">
+                <p className="text-xs text-muted">
+                  Pre-filled from this channel&apos;s saved defaults. Leave a field blank to let the
+                  AI infer it from the channel&apos;s existing videos.
+                </p>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted">
+                      Niche
+                    </label>
+                    <input
+                      value={niche}
+                      onChange={(e) => setNiche(e.target.value)}
+                      placeholder="e.g. ai-tools"
+                      className="h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted">
+                      Format
+                    </label>
+                    <select
+                      value={format}
+                      onChange={(e) => setFormat(e.target.value)}
+                      className="h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+                    >
+                      <option value="">Auto-detect</option>
+                      {FORMAT_OPTIONS.map((f) => (
+                        <option key={f} value={f}>{f}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted">
+                      Tone
+                    </label>
+                    <input
+                      value={tone}
+                      onChange={(e) => setTone(e.target.value)}
+                      placeholder="e.g. casual, energetic"
+                      className="h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted">
+                      Hook style
+                    </label>
+                    <input
+                      value={hookStyle}
+                      onChange={(e) => setHookStyle(e.target.value)}
+                      placeholder="e.g. bold claim up front"
+                      className="h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <Button disabled={!canStart} loading={create.isPending} onClick={() => create.mutate()}>

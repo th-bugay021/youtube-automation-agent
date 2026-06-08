@@ -113,6 +113,11 @@ model Channel {
   videoCount          Int            @default(0)
   viewCount           BigInt         @default(0)
   niche               String?
+  // Saved default style preferences. Pre-fill the studio form and act as the
+  // fallback (below per-video overrides, above auto-detection) during generation.
+  defaultTone         String?
+  defaultFormat       String?
+  defaultHookStyle    String?
   automationMode      AutomationMode @default(MANUAL)
   defaultPrivacy      PrivacyStatus  @default(PRIVATE)
   approvalHoldMinutes Int            @default(60)
@@ -285,6 +290,11 @@ model VideoCreation {
   status          CreationStatus @default(DRAFT)
   topic           String
   niche           String?
+  // Per-video manual style overrides. When set, these take precedence over the
+  // channel defaults and the auto-detected channel style during generation.
+  tone            String?
+  format          String?
+  hookStyle       String?
   targetSeconds   Int            @default(60)
 
   // Result of channel intelligence analysis (tone, format, voice, etc.)

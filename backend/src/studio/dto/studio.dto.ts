@@ -30,6 +30,21 @@ export class CreateCreationDto {
   niche?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  tone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  format?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  hookStyle?: string;
+
+  @IsOptional()
   @IsInt()
   @Min(15)
   @Max(600)

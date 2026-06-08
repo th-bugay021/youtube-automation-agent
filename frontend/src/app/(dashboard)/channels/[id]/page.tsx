@@ -7,12 +7,16 @@ import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { toast } from 'sonner';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { FORMAT_OPTIONS } from '@/lib/studio-types';
 
 interface Channel {
   id: string;
   title: string;
   niche?: string;
+  defaultTone?: string | null;
+  defaultFormat?: string | null;
+  defaultHookStyle?: string | null;
   automationMode: 'MANUAL' | 'RECOMMEND' | 'SEMI_AUTO' | 'FULL_AUTO';
   defaultPrivacy: 'PUBLIC' | 'UNLISTED' | 'PRIVATE';
   approvalHoldMinutes: number;
@@ -33,6 +37,20 @@ export default function ChannelDetail() {
   });
 
   const [niche, setNiche] = useState('');
+
+  // Saved default style preferences. Synced from the loaded channel; these
+  // pre-fill the studio form and act as the generation fallback below per-video
+  // overrides.
+  const [tone, setTone] = useState('');
+  const [format, setFormat] = useState('');
+  const [hookStyle, setHookStyle] = useState('');
+
+  useEffect(() => {
+    if (!channel) return;
+    setTone(channel.defaultTone ?? '');
+    setFormat(channel.defaultFormat ?? '');
+    setHookStyle(channel.defaultHookStyle ?? '');
+  }, [channel]);
 
   const update = useMutation({
     mutationFn: async (patch: Partial<Channel>) => (await api.patch(`/channels/${id}`, patch)).data,
@@ -86,6 +104,71 @@ export default function ChannelDetail() {
             className="h-10 flex-1 rounded-lg border border-border bg-bg px-3 text-sm"
           />
           <Button onClick={() => update.mutate({ niche })}>Save</Button>
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Default style preferences</CardTitle>
+        </CardHeader>
+        <p className="mb-4 text-xs text-muted">
+          Pre-fill the AI Studio form for this channel. Each can still be overridden per video.
+          Leave blank to let the AI infer it from the channel&apos;s existing videos.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted">
+              Default tone
+            </label>
+            <input
+              value={tone}
+              onChange={(e) => setTone(e.target.value)}
+              placeholder="e.g. casual, energetic"
+              className="h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted">
+              Default format
+            </label>
+            <select
+              value={format}
+              onChange={(e) => setFormat(e.target.value)}
+              className="h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+            >
+              <option value="">Auto-detect</option>
+              {FORMAT_OPTIONS.map((f) => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted">
+              Default hook style
+            </label>
+            <input
+              value={hookStyle}
+              onChange={(e) => setHookStyle(e.target.value)}
+              placeholder="e.g. bold claim up front"
+              className="h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4">
+          <Button
+            loading={update.isPending}
+            onClick={() =>
+              update.mutate({
+                defaultTone: tone.trim() || null,
+                defaultFormat: format.trim() || null,
+                defaultHookStyle: hookStyle.trim() || null,
+              } as Partial<Channel>)
+            }
+          >
+            Save preferences
+          </Button>
         </div>
       </Card>
     </div>
