@@ -16,7 +16,11 @@
 4. Set env vars (see `backend/.env.example`). Mirror **all** values across both services.
    - For separate frontend/backend hosts, set `COOKIE_SECURE=true` and `COOKIE_SAME_SITE=none`.
    - Leave `COOKIE_DOMAIN` empty unless both services use a shared parent domain you control.
-5. Open a one-off shell on the API service and run `npm run prisma:deploy` to apply migrations.
+5. Migrations apply automatically: the API runs `prisma migrate deploy` at startup
+   (see `backend/src/main.ts`) before it listens, so a fresh deploy brings the schema
+   up to date on its own. Set `MIGRATE_ON_STARTUP=false` to opt out and run migrations
+   manually instead. (This replaces the need for a platform pre-deploy hook — handy on
+   hosts like Render's free tier that don't offer one.)
 
 ## Google Cloud / YouTube API
 1. Create a Google Cloud project.
@@ -43,7 +47,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 Use the output as `TOKEN_ENCRYPTION_KEY`. **Rotating this key invalidates every stored OAuth refresh token** — keep it stable.
 
 ## First-run checklist
-- [ ] `npm run prisma:deploy` succeeds on the backend.
+- [ ] On boot the API logs `Applying database migrations` then `Database migrations up to date`.
 - [ ] `GET /api/auth/me` returns 401 (proves the auth pipeline is wired).
 - [ ] Visiting the frontend `/login` and clicking Google completes and lands on `/dashboard`.
 - [ ] After login, `GET ${BACKEND_URL}/api/channels` returns the channels you authorised.
