@@ -147,11 +147,22 @@ export class StudioController {
     let updatedScene: Record<string, unknown>;
     if (creation.style === 'FACELESS') {
       const buf = await this.pixabay.searchAndDownloadVideo(keyword, scene.durationSeconds ?? 0);
-      const path = `${id}/clips/scene-${sceneIndex}.mp4`;
-      await this.storage.upload(path, buf, 'video/mp4');
-      const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
-      // Drop any stale image URL so the scene resolves cleanly to a video.
-      updatedScene = { ...scene, imageKeyword: keyword, videoUrl: url, imageUrl: null };
+      if (buf) {
+        const path = `${id}/clips/scene-${sceneIndex}.mp4`;
+        await this.storage.upload(path, buf, 'video/mp4');
+        const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
+        // Drop any stale image URL so the scene resolves cleanly to a video.
+        updatedScene = { ...scene, imageKeyword: keyword, videoUrl: url, imageUrl: null };
+      } else {
+        // No stock clip fit the size budget; fall back to a still image so the
+        // refresh still produces a usable scene instead of failing.
+        const imgBuf = await this.pixabay.searchAndDownload(keyword);
+        const path = `${id}/images/scene-${sceneIndex}.jpg`;
+        await this.storage.upload(path, imgBuf, 'image/jpeg');
+        const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
+        // Drop any stale video URL so the scene resolves cleanly to an image.
+        updatedScene = { ...scene, imageKeyword: keyword, imageUrl: url, videoUrl: null };
+      }
     } else {
       const buf = await this.pixabay.searchAndDownload(keyword);
       const path = `${id}/images/scene-${sceneIndex}.jpg`;

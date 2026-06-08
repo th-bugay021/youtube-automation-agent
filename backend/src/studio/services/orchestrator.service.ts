@@ -94,9 +94,21 @@ export class OrchestratorService {
             scene.imageKeyword,
             scene.durationSeconds,
           );
-          const storagePath = `${creationId}/clips/scene-${scene.index}.mp4`;
-          await this.storage.upload(storagePath, buf, 'video/mp4');
-          sceneAssets.push({ scene, path: storagePath, isVideo: true });
+          if (buf) {
+            const storagePath = `${creationId}/clips/scene-${scene.index}.mp4`;
+            await this.storage.upload(storagePath, buf, 'video/mp4');
+            sceneAssets.push({ scene, path: storagePath, isVideo: true });
+          } else {
+            // No stock clip fit the size budget for this scene; fall back to a
+            // still image so the scene still renders instead of failing the job.
+            this.logger.warn(
+              `No video clip under size budget for scene ${scene.index}; using a still image`,
+            );
+            const imgBuf = await this.pixabay.searchAndDownload(scene.imageKeyword);
+            const storagePath = `${creationId}/images/scene-${scene.index}.jpg`;
+            await this.storage.upload(storagePath, imgBuf, 'image/jpeg');
+            sceneAssets.push({ scene, path: storagePath, isVideo: false });
+          }
         } else {
           const buf = await this.pixabay.searchAndDownload(scene.imageKeyword);
           const storagePath = `${creationId}/images/scene-${scene.index}.jpg`;

@@ -45,10 +45,12 @@ interface PixabayVideoResponse {
 // to storage. On a 512MB instance the `large` rendition (tens of MB, transiently
 // doubled by Buffer.from) can OOM-kill the process mid-job — the job then hangs
 // at GENERATING_IMAGES instead of failing. We therefore pick the highest-res
-// rendition whose file size is under this budget, and hard-cap the actual
-// download as a backstop. A 720p clip upscaled by Shotstack is fine for b-roll.
-const MAX_CLIP_BYTES = Number(process.env.PIXABAY_MAX_CLIP_BYTES) || 25 * 1024 * 1024;
-const MAX_DOWNLOAD_BYTES = Number(process.env.PIXABAY_MAX_DOWNLOAD_BYTES) || 45 * 1024 * 1024;
+// rendition whose file size is under this budget; if none qualifies the caller
+// falls back to a still image. The download is hard-capped as a backstop against
+// a rendition that under-reports its size. A 720p clip upscaled by Shotstack is
+// fine for b-roll.
+const MAX_CLIP_BYTES = Number(process.env.PIXABAY_MAX_CLIP_BYTES) || 20 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES = Number(process.env.PIXABAY_MAX_DOWNLOAD_BYTES) || 20 * 1024 * 1024;
 
 /**
  * Searches Pixabay for stock images and videos by keyword. Free, ~100 RPS limit.
@@ -81,8 +83,11 @@ export class PixabayService {
    * clip at least `minDurationSeconds` long so it fills the scene's timeline
    * slot without freezing on the last frame. Falls back through a looser term
    * and finally a generic cinematic search.
+   *
+   * Returns null when no candidate has a rendition under the size budget, so the
+   * caller can fall back to a still image for the scene.
    */
-  async searchAndDownloadVideo(keyword: string, minDurationSeconds = 0): Promise<Buffer> {
+  async searchAndDownloadVideo(keyword: string, minDurationSeconds = 0): Promise<Buffer | null> {
     if (!this.apiKey) {
       throw new DomainError('PIXABAY_NOT_CONFIGURED', 'PIXABAY_KEY env var is required', 500);
     }
@@ -92,7 +97,7 @@ export class PixabayService {
       const url = await this.searchFirstVideo(term, minDurationSeconds);
       if (url) return this.downloadAsBuffer(url);
     }
-    throw new DomainError('PIXABAY_NO_RESULTS', `No videos found for "${keyword}"`, 502);
+    return null;
   }
 
   private async searchFirst(query: string): Promise<string | null> {
@@ -146,28 +151,21 @@ export class PixabayService {
   }
 
   /**
-   * Picks a memory-safe rendition: the highest-resolution file whose size is
-   * within MAX_CLIP_BYTES. If every rendition is over budget (or Pixabay omits
-   * sizes), falls back to the smallest available so we still get a clip rather
-   * than risking an OOM on the largest.
+   * Picks a memory-safe rendition: the highest-resolution file whose reported
+   * size is within MAX_CLIP_BYTES. Returns null when no rendition has a known
+   * size under budget — the caller then falls back to a still image rather than
+   * risking an OOM or a download that trips the content-length cap.
    */
   private pickRendition(hit: PixabayVideoHit): string | null {
     const files = [hit.videos.large, hit.videos.medium, hit.videos.small, hit.videos.tiny].filter(
       (f): f is PixabayVideoFile => !!f?.url,
     );
-    if (files.length === 0) return null;
-
     const area = (f: PixabayVideoFile) => (f.width || 0) * (f.height || 0);
     const underBudget = files.filter((f) => f.size > 0 && f.size <= MAX_CLIP_BYTES);
-    if (underBudget.length > 0) {
-      // Best quality that still fits the budget.
-      underBudget.sort((a, b) => area(b) - area(a));
-      return underBudget[0].url;
-    }
-    // Nothing within budget (or sizes unknown): take the smallest by bytes, or
-    // by resolution when bytes are missing.
-    files.sort((a, b) => (a.size || area(a)) - (b.size || area(b)));
-    return files[0].url;
+    if (underBudget.length === 0) return null;
+    // Best quality that still fits the budget.
+    underBudget.sort((a, b) => area(b) - area(a));
+    return underBudget[0].url;
   }
 
   private async downloadAsBuffer(url: string): Promise<Buffer> {
