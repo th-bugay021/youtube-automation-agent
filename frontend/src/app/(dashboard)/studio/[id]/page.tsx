@@ -53,6 +53,33 @@ export default function StudioWizardPage() {
     },
   });
 
+  // Per-scene asset refresh: re-fetch the image/video for one scene using its
+  // (edited) keyword. We track the in-flight scene index so only that row shows
+  // a spinner, and we merge back only the asset fields to avoid clobbering other
+  // unsaved local edits (narration, duration).
+  const [refreshingIndex, setRefreshingIndex] = useState<number | null>(null);
+  const refreshAsset = useMutation({
+    mutationFn: async (scene: Scene) =>
+      (
+        await api.post<Scene>(`/studio/creations/${id}/scenes/${scene.index}/refresh-asset`, {
+          imageKeyword: scene.imageKeyword,
+        })
+      ).data,
+    onMutate: (scene) => setRefreshingIndex(scene.index),
+    onSuccess: (updated) => {
+      setScenes((prev) =>
+        (prev ?? []).map((s) =>
+          s.index === updated.index
+            ? { ...s, imageKeyword: updated.imageKeyword, imageUrl: updated.imageUrl, videoUrl: updated.videoUrl }
+            : s,
+        ),
+      );
+      toast.success('Asset refreshed');
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? 'Refresh failed'),
+    onSettled: () => setRefreshingIndex(null),
+  });
+
   if (!creation) {
     return <div className="text-sm text-muted">Loading…</div>;
   }
@@ -168,9 +195,23 @@ export default function StudioWizardPage() {
                         setScenes(next);
                       }}
                       className="h-8 flex-1 rounded border border-border bg-bg px-2 text-xs"
-                      placeholder="Image keyword"
+                      placeholder={creation.style === 'FACELESS' ? 'Video keyword' : 'Image keyword'}
                       disabled={!canEditScript}
                     />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => refreshAsset.mutate(scene)}
+                      disabled={
+                        !canEditScript ||
+                        !scene.imageKeyword?.trim() ||
+                        refreshingIndex !== null
+                      }
+                      loading={refreshingIndex === scene.index}
+                      title={`Fetch a new ${creation.style === 'FACELESS' ? 'clip' : 'image'} for this keyword`}
+                    >
+                      <RefreshCw className="size-3" /> Refresh
+                    </Button>
                     <input
                       type="number"
                       value={scene.durationSeconds}

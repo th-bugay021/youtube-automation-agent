@@ -79,6 +79,15 @@ export class UpdateScriptDto {
   scenes!: SceneEditDto[];
 }
 
+export class RefreshSceneAssetDto {
+  // The (possibly user-edited) keyword to fetch a new stock image/video with.
+  // Optional: when omitted, the scene's existing keyword is reused.
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  imageKeyword?: string;
+}
+
 export class ApproveCreationDto {
   @IsOptional()
   @IsDateString()

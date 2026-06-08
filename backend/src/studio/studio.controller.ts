@@ -16,9 +16,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ChannelsService } from '../channels/channels.service';
 import { SchedulingService } from '../scheduling/scheduling.service';
 import { StorageService } from './services/storage.service';
+import { PixabayService } from './services/pixabay.service';
 import {
   ApproveCreationDto,
   CreateCreationDto,
+  RefreshSceneAssetDto,
   UpdateScriptDto,
 } from './dto/studio.dto';
 import { JOB_RUN_CREATION, QUEUE_STUDIO, QUEUE_UPLOADS, JOB_PUBLISH_VIDEO } from '../queue/queue.constants';
@@ -32,6 +34,7 @@ export class StudioController {
     private readonly channels: ChannelsService,
     private readonly scheduling: SchedulingService,
     private readonly storage: StorageService,
+    private readonly pixabay: PixabayService,
     @InjectQueue(QUEUE_STUDIO) private readonly studioQueue: Queue,
     @InjectQueue(QUEUE_UPLOADS) private readonly uploadsQueue: Queue,
   ) {}
@@ -103,6 +106,67 @@ export class StudioController {
       where: { id },
       data: { scenes: merged as any },
     });
+  }
+
+  /**
+   * Re-fetch the stock asset for a single scene using a (possibly user-edited)
+   * keyword. Faceless creations pull a fresh video clip; every other style pulls
+   * a still image. Persists the new keyword + asset URL onto that one scene and
+   * returns it, so the editor can swap the preview without re-running the whole
+   * pipeline.
+   */
+  @Post('creations/:id/scenes/:index/refresh-asset')
+  async refreshSceneAsset(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @Body() dto: RefreshSceneAssetDto,
+  ) {
+    const creation = await this.getOwned(user.id, id);
+    if (!['SCRIPT_READY', 'IMAGES_READY', 'AUDIO_READY', 'RENDERED'].includes(creation.status)) {
+      throw new BadRequestException(`Cannot edit assets in status ${creation.status}`);
+    }
+
+    const sceneIndex = Number(index);
+    if (!Number.isInteger(sceneIndex)) {
+      throw new BadRequestException('Scene index must be an integer');
+    }
+    const scenes = (creation.scenes as any[] | null) ?? [];
+    const pos = scenes.findIndex((s) => s.index === sceneIndex);
+    if (pos === -1) throw new BadRequestException(`Scene ${index} not found`);
+
+    const scene = scenes[pos];
+    const keyword = (dto.imageKeyword ?? scene.imageKeyword ?? '').trim();
+    if (!keyword) throw new BadRequestException('A keyword is required to fetch an asset');
+
+    await this.storage.ensureBucket();
+    // Sign for a generous editing-session window so the swapped preview doesn't
+    // expire while the user keeps working.
+    const ASSET_URL_TTL = 24 * 60 * 60;
+
+    let updatedScene: Record<string, unknown>;
+    if (creation.style === 'FACELESS') {
+      const buf = await this.pixabay.searchAndDownloadVideo(keyword, scene.durationSeconds ?? 0);
+      const path = `${id}/clips/scene-${sceneIndex}.mp4`;
+      await this.storage.upload(path, buf, 'video/mp4');
+      const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
+      // Drop any stale image URL so the scene resolves cleanly to a video.
+      updatedScene = { ...scene, imageKeyword: keyword, videoUrl: url, imageUrl: null };
+    } else {
+      const buf = await this.pixabay.searchAndDownload(keyword);
+      const path = `${id}/images/scene-${sceneIndex}.jpg`;
+      await this.storage.upload(path, buf, 'image/jpeg');
+      const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
+      updatedScene = { ...scene, imageKeyword: keyword, imageUrl: url, videoUrl: null };
+    }
+
+    const nextScenes = [...scenes];
+    nextScenes[pos] = updatedScene;
+    await this.prisma.videoCreation.update({
+      where: { id },
+      data: { scenes: nextScenes as any },
+    });
+    return updatedScene;
   }
 
   /** Re-run the pipeline from the script stage after edits. */
