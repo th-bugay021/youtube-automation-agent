@@ -153,12 +153,7 @@ export class OrchestratorService {
       const totalSeconds = sceneAssets.reduce((a, si) => a + si.scene.durationSeconds, 0);
 
       const fullNarration = scenes.map((s) => s.narration).join(' ');
-      const { trackId, buffer: musicBuf } = await this.music.pickTrack(fullNarration);
-      let musicStoragePath: string | undefined;
-      if (musicBuf) {
-        musicStoragePath = `${creationId}/audio/music-${trackId}.mp3`;
-        await this.storage.upload(musicStoragePath, musicBuf, 'audio/mpeg');
-      }
+      const { url: musicUrl } = await this.music.pickTrack(fullNarration);
 
       // Subtitles + scene URLs use the now-updated per-scene durations.
       const srt = this.subtitles.build(scenes);
@@ -180,7 +175,7 @@ export class OrchestratorService {
         data: {
           scenes: scenesWithAudio as any,
           audioUrl: scenesWithAudio[0]?.audioUrl ?? null,
-          musicUrl: musicStoragePath ? await this.storage.signedUrl(musicStoragePath) : null,
+          musicUrl,
           subtitleUrl: await this.storage.signedUrl(srtPath),
           status: CreationStatus.AUDIO_READY,
         },
@@ -189,8 +184,8 @@ export class OrchestratorService {
       await this.setStatus(creationId, CreationStatus.RENDERING);
 
       // Shotstack fetches assets over HTTP, so give it signed URLs valid well
-      // past the render+poll window (images, per-scene voice, music live in
-      // Supabase).
+      // past the render+poll window (images and per-scene voice live in
+      // Supabase). Music is a public CDN URL, used as-is.
       const RENDER_URL_TTL = 2 * 60 * 60; // 2h
       const sceneRenderInputs = await Promise.all(
         sceneAssets.map(async (sa) => {
@@ -205,13 +200,9 @@ export class OrchestratorService {
           };
         }),
       );
-      const musicSignedUrl = musicStoragePath
-        ? await this.storage.signedUrl(musicStoragePath, RENDER_URL_TTL)
-        : null;
-
       const result = await this.renderer.render({
         scenes: sceneRenderInputs,
-        musicUrl: musicSignedUrl,
+        musicUrl,
         totalDurationSeconds: totalSeconds,
       });
 
