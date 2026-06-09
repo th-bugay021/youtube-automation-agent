@@ -295,6 +295,11 @@ model VideoCreation {
   tone            String?
   format          String?
   hookStyle       String?
+  // Manual override for the auto-detected recurring themes. When non-empty it
+  // wins over channel-history auto-detection during generation, so a
+  // mis-detected theme (e.g. "anime") can't override the chosen niche. Empty
+  // means "fall back to the niche / auto-detected themes".
+  topThemes       String[]       @default([])
   targetSeconds   Int            @default(60)
 
   // Result of channel intelligence analysis (tone, format, voice, etc.)

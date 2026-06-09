@@ -40,6 +40,27 @@ export default function StudioWizardPage() {
     if (creation?.scenes && !scenes) setScenes(creation.scenes);
   }, [creation, scenes]);
 
+  // Manual override for the auto-detected recurring themes. Synced once from the
+  // loaded creation's analysed style; persisted edits take effect on re-render.
+  const [topThemesInput, setTopThemesInput] = useState<string | null>(null);
+  useEffect(() => {
+    if (topThemesInput !== null) return;
+    const style = creation?.channelStyle as Record<string, unknown> | null | undefined;
+    const themes = style?.topThemes;
+    if (Array.isArray(themes)) setTopThemesInput(themes.join(', '));
+    else if (style) setTopThemesInput('');
+  }, [creation, topThemesInput]);
+
+  const saveTopThemes = useMutation({
+    mutationFn: async (themes: string[]) =>
+      (await api.post(`/studio/creations/${id}/top-themes`, { topThemes: themes })).data,
+    onSuccess: () => {
+      toast.success('Top themes saved — applied on next re-render');
+      qc.invalidateQueries({ queryKey: ['creation', id] });
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? 'Save failed'),
+  });
+
   const isReadyToApprove = creation?.status === 'RENDERED';
   const canEditScript = creation && ['SCRIPT_READY', 'IMAGES_READY', 'AUDIO_READY', 'RENDERED'].includes(creation.status);
 
@@ -168,13 +189,59 @@ export default function StudioWizardPage() {
             <Badge tone="brand">Auto-detected</Badge>
           </CardHeader>
           <dl className="grid gap-3 text-sm sm:grid-cols-2">
-            {Object.entries(creation.channelStyle as Record<string, unknown>).map(([k, v]) => (
-              <div key={k}>
-                <dt className="text-xs uppercase tracking-wide text-muted">{k}</dt>
-                <dd className="mt-0.5">{Array.isArray(v) ? v.join(', ') : String(v)}</dd>
-              </div>
-            ))}
+            {Object.entries(creation.channelStyle as Record<string, unknown>)
+              .filter(([k]) => k !== 'topThemes')
+              .map(([k, v]) => (
+                <div key={k}>
+                  <dt className="text-xs uppercase tracking-wide text-muted">{k}</dt>
+                  <dd className="mt-0.5">{Array.isArray(v) ? v.join(', ') : String(v)}</dd>
+                </div>
+              ))}
           </dl>
+
+          <div className="mt-4 border-t border-border pt-4">
+            <label className="block text-xs uppercase tracking-wide text-muted">
+              Top themes
+            </label>
+            <p className="mt-1 text-xs text-muted">
+              Auto-detected from this channel&apos;s video history. Override or clear these
+              if they don&apos;t match your niche — the cleared/edited value drives the script
+              and image keywords on the next re-render. Leave blank to fall back to the niche.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                value={topThemesInput ?? ''}
+                onChange={(e) => setTopThemesInput(e.target.value)}
+                placeholder="comma-separated, e.g. ai tools, productivity"
+                className="h-9 min-w-[16rem] flex-1 rounded-lg border border-border bg-bg px-3 text-sm"
+              />
+              <Button
+                size="sm"
+                onClick={() =>
+                  saveTopThemes.mutate(
+                    (topThemesInput ?? '')
+                      .split(',')
+                      .map((t) => t.trim())
+                      .filter(Boolean),
+                  )
+                }
+                loading={saveTopThemes.isPending}
+              >
+                Save
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  setTopThemesInput('');
+                  saveTopThemes.mutate([]);
+                }}
+                disabled={saveTopThemes.isPending}
+              >
+                Clear
+              </Button>
+            </div>
+          </div>
         </Card>
       )}
 

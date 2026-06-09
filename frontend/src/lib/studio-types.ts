@@ -60,6 +60,8 @@ export interface VideoCreation {
   tone?: string | null;
   format?: string | null;
   hookStyle?: string | null;
+  /** Manual override for the auto-detected recurring themes (empty = fallback). */
+  topThemes?: string[] | null;
   targetSeconds: number;
   channelStyle?: Record<string, unknown> | null;
   scenes?: Scene[] | null;

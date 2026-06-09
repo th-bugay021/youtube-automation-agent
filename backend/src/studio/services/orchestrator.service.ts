@@ -57,9 +57,21 @@ export class OrchestratorService {
       // precedence: per-video (creation) value > saved channel default >
       // auto-detected. This lets users correct a mis-detected niche/tone/etc.
       const channel = await this.prisma.channel.findUnique({ where: { id: creation.channelId } });
+      const manualNiche = creation.niche ?? channel?.niche ?? null;
+      // topThemes precedence: an explicit per-video override wins; otherwise, if
+      // the niche was set manually, derive the themes from it so a mis-detected
+      // channel-history theme (e.g. "anime") can't override the chosen niche;
+      // only with no manual niche do we trust the auto-detected themes.
+      const topThemes =
+        creation.topThemes && creation.topThemes.length > 0
+          ? creation.topThemes
+          : manualNiche
+            ? [manualNiche]
+            : auto.topThemes;
       const style: ChannelStyleProfile = {
         ...auto,
-        niche: creation.niche ?? channel?.niche ?? auto.niche,
+        niche: manualNiche ?? auto.niche,
+        topThemes,
         tone: creation.tone ?? channel?.defaultTone ?? auto.tone,
         format: creation.format ?? channel?.defaultFormat ?? auto.format,
         hookStyle: creation.hookStyle ?? channel?.defaultHookStyle ?? auto.hookStyle,

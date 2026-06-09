@@ -25,6 +25,7 @@ import {
   CreateCreationDto,
   RefreshSceneAssetDto,
   UpdateScriptDto,
+  UpdateTopThemesDto,
 } from './dto/studio.dto';
 import {
   JOB_RUN_CREATION,
@@ -67,6 +68,7 @@ export class StudioController {
         tone: dto.tone,
         format: dto.format,
         hookStyle: dto.hookStyle,
+        topThemes: dto.topThemes ?? [],
         targetSeconds: dto.targetSeconds ?? 60,
         status: CreationStatus.DRAFT,
       },
@@ -119,6 +121,38 @@ export class StudioController {
     return this.prisma.videoCreation.update({
       where: { id },
       data: { scenes: merged as any },
+    });
+  }
+
+  /**
+   * Manually override (or clear) the auto-detected recurring themes shown in the
+   * "Channel style analysis" card. The override persists across regenerations
+   * (analyze() never touches it) and, per the orchestrator's precedence, wins
+   * over channel-history auto-detection. We also mirror the value into the
+   * displayed `channelStyle.topThemes` so the card reflects the change
+   * immediately; the next re-render applies it to the script and image keywords.
+   * Clearing it (empty array) falls back to the niche / auto-detected themes.
+   */
+  @Post('creations/:id/top-themes')
+  async updateTopThemes(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateTopThemesDto,
+  ) {
+    const creation = await this.getOwned(user.id, id);
+    const themes = dto.topThemes.map((t) => t.trim()).filter(Boolean);
+
+    // Reflect the override into the displayed style. When cleared, show the
+    // effective fallback (manual niche if any) so the card isn't misleading.
+    const niche = creation.niche ?? null;
+    const channelStyle = {
+      ...((creation.channelStyle as Record<string, unknown> | null) ?? {}),
+      topThemes: themes.length > 0 ? themes : niche ? [niche] : [],
+    };
+
+    return this.prisma.videoCreation.update({
+      where: { id },
+      data: { topThemes: themes, channelStyle: channelStyle as any },
     });
   }
 

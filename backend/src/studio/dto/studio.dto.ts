@@ -62,6 +62,12 @@ export class CreateCreationDto {
   hookStyle?: string;
 
   @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(60, { each: true })
+  topThemes?: string[];
+
+  @IsOptional()
   @IsInt()
   @Min(15)
   @Max(600)
@@ -98,6 +104,18 @@ export class UpdateScriptDto {
   @ValidateNested({ each: true })
   @Type(() => SceneEditDto)
   scenes!: SceneEditDto[];
+}
+
+/**
+ * Manually override (or clear) the auto-detected recurring themes for a
+ * creation. An empty array clears the override so generation falls back to the
+ * niche / auto-detected themes.
+ */
+export class UpdateTopThemesDto {
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(60, { each: true })
+  topThemes!: string[];
 }
 
 export class RefreshSceneAssetDto {

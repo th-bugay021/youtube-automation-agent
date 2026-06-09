@@ -28,12 +28,25 @@ const userPrompt = (
   style: ChannelStyleProfile,
   videoStyle: string,
   targetSeconds: number,
-) => `
+) => {
+  const themes = (style.topThemes ?? []).filter((t) => t && t !== style.niche);
+  return `
 Topic: ${topic}
+Niche: ${style.niche}
 Video style: ${videoStyle}
 Target length: ${targetSeconds} seconds
-Channel style profile:
-${JSON.stringify(style, null, 2)}
+
+The NICHE above is authoritative: every scene's subject matter and image keyword
+must stay within "${style.niche}" and serve the topic. Do NOT drift to unrelated
+subjects.
+
+Channel voice (apply to HOW the narration sounds, not WHAT it is about):
+- tone: ${style.tone}
+- format: ${style.format}
+- voicePattern: ${style.voicePattern}
+- hookStyle: ${style.hookStyle}
+- averageVideoLength: ${style.averageVideoLength}
+${themes.length ? `Secondary recurring themes (use only where they fit the niche and topic; ignore any that conflict): ${themes.join(', ')}` : ''}
 
 Generate a script split into scenes. Aim for ~7-12 words per second of narration.
 Total scenes should make the video close to ${targetSeconds} seconds when read aloud.
@@ -45,10 +58,11 @@ Return JSON:
       "index": 0,
       "narration": "the spoken text for this scene",
       "durationSeconds": <int, 3-10>,
-      "imageKeyword": "2-4 word search term for a stock image that visually fits this scene"
+      "imageKeyword": "2-4 word search term for a stock image that fits this scene and the niche \"${style.niche}\""
     }
   ]
 }`;
+};
 
 @Injectable()
 export class ScriptService {
