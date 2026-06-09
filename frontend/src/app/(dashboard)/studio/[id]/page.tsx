@@ -90,6 +90,7 @@ export default function StudioWizardPage() {
       (
         await api.post<Scene>(`/studio/creations/${id}/scenes/${scene.index}/refresh-asset`, {
           imageKeyword: scene.imageKeyword,
+          imagePrompt: scene.imagePrompt,
         })
       ).data,
     onMutate: (scene) => setRefreshingIndex(scene.index),
@@ -97,11 +98,17 @@ export default function StudioWizardPage() {
       setScenes((prev) =>
         (prev ?? []).map((s) =>
           s.index === updated.index
-            ? { ...s, imageKeyword: updated.imageKeyword, imageUrl: updated.imageUrl, videoUrl: updated.videoUrl }
+            ? {
+                ...s,
+                imageKeyword: updated.imageKeyword,
+                imagePrompt: updated.imagePrompt,
+                imageUrl: updated.imageUrl,
+                videoUrl: updated.videoUrl,
+              }
             : s,
         ),
       );
-      toast.success('Asset refreshed');
+      toast.success(creation?.style === 'FACELESS' ? 'Clip refreshed' : 'Image regenerated');
     },
     onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? 'Refresh failed'),
     onSettled: () => setRefreshingIndex(null),
@@ -335,46 +342,89 @@ export default function StudioWizardPage() {
                     className="w-full resize-none rounded-lg border border-border bg-bg px-3 py-2 text-sm leading-relaxed"
                     disabled={!canEditScript}
                   />
-                  <div className="flex items-center gap-2">
-                    <input
-                      value={scene.imageKeyword}
-                      onChange={(e) => {
-                        const next = [...scenes];
-                        next[idx] = { ...scene, imageKeyword: e.target.value };
-                        setScenes(next);
-                      }}
-                      className="h-8 flex-1 rounded border border-border bg-bg px-2 text-xs"
-                      placeholder={creation.style === 'FACELESS' ? 'Video keyword' : 'Image keyword'}
-                      disabled={!canEditScript}
-                    />
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => refreshAsset.mutate(scene)}
-                      disabled={
-                        !canEditScript ||
-                        !scene.imageKeyword?.trim() ||
-                        refreshingIndex !== null
-                      }
-                      loading={refreshingIndex === scene.index}
-                      title={`Fetch a new ${creation.style === 'FACELESS' ? 'clip' : 'image'} for this keyword`}
-                    >
-                      <RefreshCw className="size-3" /> Refresh
-                    </Button>
-                    <input
-                      type="number"
-                      value={scene.durationSeconds}
-                      min={2}
-                      max={15}
-                      onChange={(e) => {
-                        const next = [...scenes];
-                        next[idx] = { ...scene, durationSeconds: Number(e.target.value) };
-                        setScenes(next);
-                      }}
-                      className="h-8 w-16 rounded border border-border bg-bg px-2 text-xs"
-                      disabled={!canEditScript}
-                    />
-                  </div>
+                  {creation.style === 'FACELESS' ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={scene.imageKeyword}
+                        onChange={(e) => {
+                          const next = [...scenes];
+                          next[idx] = { ...scene, imageKeyword: e.target.value };
+                          setScenes(next);
+                        }}
+                        className="h-8 flex-1 rounded border border-border bg-bg px-2 text-xs"
+                        placeholder="Video keyword"
+                        disabled={!canEditScript}
+                      />
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => refreshAsset.mutate(scene)}
+                        disabled={
+                          !canEditScript || !scene.imageKeyword?.trim() || refreshingIndex !== null
+                        }
+                        loading={refreshingIndex === scene.index}
+                        title="Fetch a new clip for this keyword"
+                      >
+                        <RefreshCw className="size-3" /> Refresh
+                      </Button>
+                      <input
+                        type="number"
+                        value={scene.durationSeconds}
+                        min={2}
+                        max={15}
+                        onChange={(e) => {
+                          const next = [...scenes];
+                          next[idx] = { ...scene, durationSeconds: Number(e.target.value) };
+                          setScenes(next);
+                        }}
+                        className="h-8 w-16 rounded border border-border bg-bg px-2 text-xs"
+                        disabled={!canEditScript}
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <textarea
+                        value={scene.imagePrompt ?? ''}
+                        onChange={(e) => {
+                          const next = [...scenes];
+                          next[idx] = { ...scene, imagePrompt: e.target.value };
+                          setScenes(next);
+                        }}
+                        rows={3}
+                        placeholder="Image prompt — describe the scene (cinematic, photorealistic, no text)"
+                        className="w-full resize-none rounded-lg border border-border bg-bg px-2 py-2 text-xs leading-relaxed"
+                        disabled={!canEditScript}
+                        title="Detailed prompt used to generate this scene's image"
+                      />
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => refreshAsset.mutate(scene)}
+                          disabled={
+                            !canEditScript || !scene.imagePrompt?.trim() || refreshingIndex !== null
+                          }
+                          loading={refreshingIndex === scene.index}
+                          title="Regenerate this scene's image from the prompt"
+                        >
+                          <RefreshCw className="size-3" /> Regenerate
+                        </Button>
+                        <input
+                          type="number"
+                          value={scene.durationSeconds}
+                          min={2}
+                          max={15}
+                          onChange={(e) => {
+                            const next = [...scenes];
+                            next[idx] = { ...scene, durationSeconds: Number(e.target.value) };
+                            setScenes(next);
+                          }}
+                          className="h-8 w-16 rounded border border-border bg-bg px-2 text-xs"
+                          disabled={!canEditScript}
+                        />
+                      </div>
+                    </>
+                  )}
                   <div className="flex items-center gap-2">
                     <label className="text-[10px] uppercase tracking-wide text-muted">
                       Motion

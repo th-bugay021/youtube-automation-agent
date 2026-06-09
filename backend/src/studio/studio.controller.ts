@@ -20,6 +20,8 @@ import { ChannelsService } from '../channels/channels.service';
 import { SchedulingService } from '../scheduling/scheduling.service';
 import { StorageService } from './services/storage.service';
 import { PixabayService } from './services/pixabay.service';
+import { OpenAiService } from '../ai/openai.service';
+import { buildImagePrompt } from './services/script.service';
 import {
   ApproveCreationDto,
   CreateCreationDto,
@@ -50,6 +52,7 @@ export class StudioController {
     private readonly scheduling: SchedulingService,
     private readonly storage: StorageService,
     private readonly pixabay: PixabayService,
+    private readonly openai: OpenAiService,
     @InjectQueue(QUEUE_STUDIO) private readonly studioQueue: Queue,
     @InjectQueue(QUEUE_UPLOADS) private readonly uploadsQueue: Queue,
   ) {}
@@ -157,11 +160,12 @@ export class StudioController {
   }
 
   /**
-   * Re-fetch the stock asset for a single scene using a (possibly user-edited)
-   * keyword. Faceless creations pull a fresh video clip; every other style pulls
-   * a still image. Persists the new keyword + asset URL onto that one scene and
-   * returns it, so the editor can swap the preview without re-running the whole
-   * pipeline.
+   * Regenerate the asset for a single scene. Faceless creations pull a fresh
+   * stock video clip from a (possibly user-edited) keyword; every other style
+   * generates a new still image from a (possibly user-edited) detailed prompt
+   * via OpenAI. Persists the new keyword/prompt + asset URL onto that one scene
+   * and returns it, so the editor can swap the preview without re-running the
+   * whole pipeline.
    */
   @Post('creations/:id/scenes/:index/refresh-asset')
   async refreshSceneAsset(
@@ -184,8 +188,6 @@ export class StudioController {
     if (pos === -1) throw new BadRequestException(`Scene ${index} not found`);
 
     const scene = scenes[pos];
-    const keyword = (dto.imageKeyword ?? scene.imageKeyword ?? '').trim();
-    if (!keyword) throw new BadRequestException('A keyword is required to fetch an asset');
 
     await this.storage.ensureBucket();
     // Sign for a generous editing-session window so the swapped preview doesn't
@@ -194,6 +196,9 @@ export class StudioController {
 
     let updatedScene: Record<string, unknown>;
     if (creation.style === 'FACELESS') {
+      // Faceless scenes use stock video clips, searched by a short keyword.
+      const keyword = (dto.imageKeyword ?? scene.imageKeyword ?? '').trim();
+      if (!keyword) throw new BadRequestException('A keyword is required to fetch a clip');
       const buf = await this.pixabay.searchAndDownloadVideo(keyword, scene.durationSeconds ?? 0);
       if (buf) {
         const path = `${id}/clips/scene-${sceneIndex}.mp4`;
@@ -225,13 +230,22 @@ export class StudioController {
         };
       }
     } else {
-      const buf = await this.pixabay.searchAndDownload(keyword);
+      // Still-image styles regenerate the image from the (possibly user-edited)
+      // detailed prompt, kept on-niche. Falls back to a narration-derived prompt.
+      const niche = creation.niche ?? undefined;
+      const prompt = (
+        dto.imagePrompt ??
+        scene.imagePrompt ??
+        buildImagePrompt(scene.narration ?? '', niche)
+      ).trim();
+      if (!prompt) throw new BadRequestException('A prompt is required to generate an image');
+      const buf = await this.openai.generateImage(prompt);
       const path = `${id}/images/scene-${sceneIndex}.jpg`;
       await this.storage.upload(path, buf, 'image/jpeg');
       const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
       updatedScene = {
         ...scene,
-        imageKeyword: keyword,
+        imagePrompt: prompt,
         imageUrl: url,
         videoUrl: null,
         customImagePath: null,

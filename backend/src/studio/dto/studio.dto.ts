@@ -95,6 +95,11 @@ export class SceneEditDto {
   imageKeyword?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(1200)
+  imagePrompt?: string;
+
+  @IsOptional()
   @IsIn(MOTION_EFFECTS)
   motionEffect?: MotionEffect;
 }
@@ -119,12 +124,19 @@ export class UpdateTopThemesDto {
 }
 
 export class RefreshSceneAssetDto {
-  // The (possibly user-edited) keyword to fetch a new stock image/video with.
+  // The (possibly user-edited) keyword to fetch a new stock clip with (faceless).
   // Optional: when omitted, the scene's existing keyword is reused.
   @IsOptional()
   @IsString()
   @MaxLength(120)
   imageKeyword?: string;
+
+  // The (possibly user-edited) image-generation prompt for still-image styles.
+  // Optional: when omitted, the scene's existing prompt is reused.
+  @IsOptional()
+  @IsString()
+  @MaxLength(1200)
+  imagePrompt?: string;
 }
 
 export class ApproveCreationDto {

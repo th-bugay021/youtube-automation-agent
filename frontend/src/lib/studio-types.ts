@@ -41,7 +41,10 @@ export interface Scene {
   index: number;
   narration: string;
   durationSeconds: number;
+  /** Short stock-search term — used by faceless videos to find a clip. */
   imageKeyword: string;
+  /** Detailed prompt driving AI image generation for still-image styles. */
+  imagePrompt?: string;
   imageUrl?: string;
   videoUrl?: string;
   /** Per-scene motion effect applied to still images at render time. */

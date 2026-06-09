@@ -2,8 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { CreationStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { IntelligenceService, ChannelStyleProfile } from './intelligence.service';
-import { ScriptService, Scene } from './script.service';
+import { ScriptService, Scene, buildImagePrompt } from './script.service';
 import { PixabayService } from './pixabay.service';
+import { OpenAiService } from '../../ai/openai.service';
 import { TtsService } from './tts.service';
 import { MusicService } from './music.service';
 import { SubtitlesService } from './subtitles.service';
@@ -21,7 +22,8 @@ import { NotificationsService } from '../../notifications/notifications.service'
  * Stages:
  *  1. ANALYZING_CHANNEL   → IntelligenceService.analyze()
  *  2. GENERATING_SCRIPT   → ScriptService.generate()
- *  3. GENERATING_IMAGES   → PixabayService per scene
+ *  3. GENERATING_IMAGES   → OpenAI image gen per scene (still styles);
+ *                           PixabayService stock video clips (faceless)
  *  4. GENERATING_AUDIO    → TtsService (full script concatenated)
  *  5. RENDERING           → RendererService.render()
  *  6. RENDERED            → asset URLs stored, ready for user approval
@@ -35,6 +37,7 @@ export class OrchestratorService {
     private readonly intelligence: IntelligenceService,
     private readonly script: ScriptService,
     private readonly pixabay: PixabayService,
+    private readonly openai: OpenAiService,
     private readonly tts: TtsService,
     private readonly music: MusicService,
     private readonly subtitles: SubtitlesService,
@@ -122,7 +125,11 @@ export class OrchestratorService {
             sceneAssets.push({ scene, path: storagePath, isVideo: false });
           }
         } else {
-          const buf = await this.pixabay.searchAndDownload(scene.imageKeyword);
+          // Still-image styles render an AI-generated image built from the
+          // scene's detailed, narration-derived prompt (kept on-niche), instead
+          // of stock-photo search — so visuals match the topic far more closely.
+          const prompt = scene.imagePrompt?.trim() || buildImagePrompt(scene.narration, style.niche);
+          const buf = await this.openai.generateImage(prompt);
           const storagePath = `${creationId}/images/scene-${scene.index}.jpg`;
           await this.storage.upload(storagePath, buf, 'image/jpeg');
           if (!thumbnailBuffer) thumbnailBuffer = buf;
