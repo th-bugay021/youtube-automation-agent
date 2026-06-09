@@ -292,13 +292,19 @@ export default function StudioIndexPage() {
           <Badge>{creations?.length ?? 0}</Badge>
         </CardHeader>
         <div className="divide-y divide-border">
-          {(creations ?? []).map((c) => (
-            <Link
+          {(creations ?? []).map((c) => {
+            const hasScenes = c.status !== 'DRAFT' && c.status !== 'ANALYZING_CHANNEL' &&
+              c.status !== 'GENERATING_SCRIPT';
+            const isRendered = c.status === 'RENDERED' || c.status === 'APPROVED';
+            return (
+            <div
               key={c.id}
-              href={`/studio/${c.id}`}
-              className="flex items-center justify-between gap-3 py-3 transition hover:opacity-80"
+              className="flex items-center justify-between gap-3 py-3"
             >
-              <div className="flex items-center gap-3">
+              <Link
+                href={`/studio/${c.id}`}
+                className="flex min-w-0 flex-1 items-center gap-3 transition hover:opacity-80"
+              >
                 {c.thumbnailUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={c.thumbnailUrl} alt="" className="size-12 rounded-lg object-cover" />
@@ -307,24 +313,36 @@ export default function StudioIndexPage() {
                     <Film className="size-4 text-muted" />
                   </div>
                 )}
-                <div>
-                  <div className="text-sm font-medium">{c.topic}</div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{c.topic}</div>
                   <div className="text-xs text-muted">
                     {c.style} · {formatDate(c.createdAt)}
                   </div>
                 </div>
+              </Link>
+              <div className="flex shrink-0 items-center gap-2">
+                {hasScenes && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => router.push(`/studio/${c.id}`)}
+                  >
+                    {isRendered ? 'Edit & Re-render' : 'Edit Scenes'}
+                  </Button>
+                )}
+                <Badge
+                  tone={
+                    c.status === 'FAILED' ? 'danger' :
+                    isRendered ? 'success' :
+                    'brand'
+                  }
+                >
+                  {STATUS_LABELS[c.status]}
+                </Badge>
               </div>
-              <Badge
-                tone={
-                  c.status === 'FAILED' ? 'danger' :
-                  c.status === 'RENDERED' || c.status === 'APPROVED' ? 'success' :
-                  'brand'
-                }
-              >
-                {STATUS_LABELS[c.status]}
-              </Badge>
-            </Link>
-          ))}
+            </div>
+            );
+          })}
           {(creations?.length ?? 0) === 0 && (
             <div className="py-6 text-center text-sm text-muted">No creations yet.</div>
           )}

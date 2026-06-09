@@ -8,6 +8,12 @@ export interface RenderSceneInput {
   videoUrl?: string;
   audioUrl: string;
   durationSeconds: number;
+  /**
+   * Per-scene motion effect for still images: static | zoom-in | zoom-out |
+   * pan-left | pan-right | ken-burns. Defaults to ken-burns. Ignored for video
+   * clips, which already move. See motionProps() for the Shotstack mapping.
+   */
+  motionEffect?: string;
 }
 
 export interface RenderInput {
@@ -145,6 +151,37 @@ export class RendererService {
     }
   }
 
+  /**
+   * Maps a scene's motion effect to Shotstack image-clip animation props using
+   * keyframe arrays (`scale` and `offset.x` animate from→to over the clip).
+   * `length` is the scene duration in seconds. `static` returns no transform.
+   *
+   * If a future Shotstack environment rejects keyframe arrays, this is the
+   * single place to swap back to the built-in `effect` presets
+   * (zoomIn/zoomOut/slideLeft/slideRight).
+   */
+  private motionProps(effect: string, length: number): Record<string, unknown> {
+    const kf = (from: number, to: number) => [
+      { from, to, start: 0, length, interpolation: 'linear' },
+    ];
+    switch (effect) {
+      case 'static':
+        return {};
+      case 'zoom-in':
+        return { scale: kf(1.0, 1.2) };
+      case 'zoom-out':
+        return { scale: kf(1.2, 1.0) };
+      case 'pan-left':
+        return { offset: { x: kf(0, -0.1) } };
+      case 'pan-right':
+        return { offset: { x: kf(0, 0.1) } };
+      case 'ken-burns':
+      default:
+        // Cinematic: slow zoom while drifting sideways.
+        return { scale: kf(1.0, 1.15), offset: { x: kf(0, 0.05) } };
+    }
+  }
+
   private buildTimeline(input: RenderInput): Record<string, unknown> {
     // Each scene contributes a visual clip (a stock video for faceless videos,
     // or a still image for slideshows) and its own voiceover clip, both starting
@@ -173,7 +210,7 @@ export class RendererService {
           start,
           length,
           fit: 'cover',
-          effect: 'zoomIn',
+          ...this.motionProps(scene.motionEffect ?? 'ken-burns', length),
         });
       } else {
         throw new DomainError(

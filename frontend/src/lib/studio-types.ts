@@ -1,5 +1,28 @@
 export type VideoStyle = 'FACELESS' | 'ANIMATED' | 'SLIDESHOW' | 'SCREEN_RECORDING';
 
+/**
+ * Per-scene motion effect applied to still images at render time. Must stay in
+ * sync with MOTION_EFFECTS in the backend studio DTO. `ken-burns` is the default.
+ */
+export type MotionEffect =
+  | 'static'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'pan-left'
+  | 'pan-right'
+  | 'ken-burns';
+
+export const DEFAULT_MOTION_EFFECT: MotionEffect = 'ken-burns';
+
+export const MOTION_OPTIONS: { value: MotionEffect; label: string }[] = [
+  { value: 'static', label: 'Static — no movement' },
+  { value: 'zoom-in', label: 'Zoom in' },
+  { value: 'zoom-out', label: 'Zoom out' },
+  { value: 'pan-left', label: 'Pan left' },
+  { value: 'pan-right', label: 'Pan right' },
+  { value: 'ken-burns', label: 'Ken Burns (zoom + pan)' },
+];
+
 export type CreationStatus =
   | 'DRAFT'
   | 'ANALYZING_CHANNEL'
@@ -21,6 +44,10 @@ export interface Scene {
   imageKeyword: string;
   imageUrl?: string;
   videoUrl?: string;
+  /** Per-scene motion effect applied to still images at render time. */
+  motionEffect?: MotionEffect;
+  /** Supabase path of a user-uploaded image; overrides the stock asset. */
+  customImagePath?: string;
 }
 
 export interface VideoCreation {

@@ -9,6 +9,10 @@ export interface Scene {
   imageKeyword: string;
   imageUrl?: string;
   videoUrl?: string;
+  /** Per-scene motion effect (see RendererService); defaults to 'ken-burns'. */
+  motionEffect?: string;
+  /** Supabase path of a user-uploaded image that overrides the stock asset. */
+  customImagePath?: string;
 }
 
 interface ScriptResponse {
@@ -68,6 +72,9 @@ export class ScriptService {
       ...s,
       index: i,
       durationSeconds: Math.max(2, Math.min(15, s.durationSeconds || 5)),
+      // Every scene defaults to the cinematic Ken Burns motion; the user can
+      // override this per scene in the scene editor before rendering.
+      motionEffect: s.motionEffect ?? 'ken-burns',
     }));
   }
 }

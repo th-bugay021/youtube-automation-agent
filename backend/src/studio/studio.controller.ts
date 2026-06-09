@@ -5,8 +5,11 @@ import {
   Get,
   Param,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { CreationStatus, VideoStatus } from '@prisma/client';
@@ -23,8 +26,19 @@ import {
   RefreshSceneAssetDto,
   UpdateScriptDto,
 } from './dto/studio.dto';
-import { JOB_RUN_CREATION, QUEUE_STUDIO, QUEUE_UPLOADS, JOB_PUBLISH_VIDEO } from '../queue/queue.constants';
+import {
+  JOB_RUN_CREATION,
+  JOB_RENDER_CREATION,
+  QUEUE_STUDIO,
+  QUEUE_UPLOADS,
+  JOB_PUBLISH_VIDEO,
+} from '../queue/queue.constants';
 import { DomainError } from '../common/filters/all-exceptions.filter';
+
+// Custom scene images Shotstack must be able to fetch. Keep in step with the
+// accept filter on the frontend file picker.
+const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 @Controller('studio')
 @UseGuards(JwtAuthGuard)
@@ -152,7 +166,14 @@ export class StudioController {
         await this.storage.upload(path, buf, 'video/mp4');
         const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
         // Drop any stale image URL so the scene resolves cleanly to a video.
-        updatedScene = { ...scene, imageKeyword: keyword, videoUrl: url, imageUrl: null };
+        // A fresh stock asset supersedes any earlier custom upload.
+        updatedScene = {
+          ...scene,
+          imageKeyword: keyword,
+          videoUrl: url,
+          imageUrl: null,
+          customImagePath: null,
+        };
       } else {
         // No stock clip fit the size budget; fall back to a still image so the
         // refresh still produces a usable scene instead of failing.
@@ -161,14 +182,26 @@ export class StudioController {
         await this.storage.upload(path, imgBuf, 'image/jpeg');
         const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
         // Drop any stale video URL so the scene resolves cleanly to an image.
-        updatedScene = { ...scene, imageKeyword: keyword, imageUrl: url, videoUrl: null };
+        updatedScene = {
+          ...scene,
+          imageKeyword: keyword,
+          imageUrl: url,
+          videoUrl: null,
+          customImagePath: null,
+        };
       }
     } else {
       const buf = await this.pixabay.searchAndDownload(keyword);
       const path = `${id}/images/scene-${sceneIndex}.jpg`;
       await this.storage.upload(path, buf, 'image/jpeg');
       const url = await this.storage.signedUrl(path, ASSET_URL_TTL);
-      updatedScene = { ...scene, imageKeyword: keyword, imageUrl: url, videoUrl: null };
+      updatedScene = {
+        ...scene,
+        imageKeyword: keyword,
+        imageUrl: url,
+        videoUrl: null,
+        customImagePath: null,
+      };
     }
 
     const nextScenes = [...scenes];
@@ -178,6 +211,98 @@ export class StudioController {
       data: { scenes: nextScenes as any },
     });
     return updatedScene;
+  }
+
+  /**
+   * Upload a custom image for one scene. The image is stored in Supabase under a
+   * deterministic per-scene path and recorded on the scene as `customImagePath`,
+   * which overrides the stock asset at render time. Replaces the scene's preview
+   * (imageUrl) and clears any video URL so the scene resolves to the image.
+   */
+  @Post('creations/:id/scenes/:index/image')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_IMAGE_BYTES } }))
+  async uploadSceneImage(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @UploadedFile() file: { buffer: Buffer; mimetype: string; size: number } | undefined,
+  ) {
+    const creation = await this.getOwned(user.id, id);
+    if (!['SCRIPT_READY', 'IMAGES_READY', 'AUDIO_READY', 'RENDERED'].includes(creation.status)) {
+      throw new BadRequestException(`Cannot edit assets in status ${creation.status}`);
+    }
+    if (!file) throw new BadRequestException('No image file provided');
+    if (!ALLOWED_IMAGE_MIME.includes(file.mimetype)) {
+      throw new BadRequestException('Image must be JPG, PNG, or WEBP');
+    }
+
+    const sceneIndex = Number(index);
+    if (!Number.isInteger(sceneIndex)) {
+      throw new BadRequestException('Scene index must be an integer');
+    }
+    const scenes = (creation.scenes as any[] | null) ?? [];
+    const pos = scenes.findIndex((s) => s.index === sceneIndex);
+    if (pos === -1) throw new BadRequestException(`Scene ${index} not found`);
+
+    await this.storage.ensureBucket();
+    // Custom uploads live under a dedicated prefix so they never collide with the
+    // pipeline's stock images at `${id}/images/...`. The render-only pipeline
+    // signs this exact path, so Shotstack always fetches the user's image.
+    const path = `${id}/scene-images/${sceneIndex}.jpg`;
+    await this.storage.upload(path, file.buffer, file.mimetype);
+    // Sign for a generous editing-session window so the preview doesn't expire
+    // while the user keeps working before rendering.
+    const url = await this.storage.signedUrl(path, 24 * 60 * 60);
+
+    const updatedScene = {
+      ...scenes[pos],
+      customImagePath: path,
+      imageUrl: url,
+      videoUrl: null,
+    };
+    const nextScenes = [...scenes];
+    nextScenes[pos] = updatedScene;
+    await this.prisma.videoCreation.update({
+      where: { id },
+      data: { scenes: nextScenes as any },
+    });
+    return updatedScene;
+  }
+
+  /**
+   * Scene-editor "Save & Render": re-render the already-generated scenes with
+   * the user's edited images, motion effects, and durations — without rerunning
+   * the script/image/audio stages. Requires assets to already exist (the video
+   * has been rendered at least once), so allowed only from AUDIO_READY/RENDERED.
+   */
+  @Post('creations/:id/render')
+  async render(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    const creation = await this.getOwned(user.id, id);
+    if (creation.status === CreationStatus.RENDERING) {
+      // Same stuck-render guard as regenerate: only block a render that is still
+      // plausibly alive.
+      const ageMs = Date.now() - creation.updatedAt.getTime();
+      const stuckMs = Number(process.env.RENDER_STUCK_TIMEOUT_MS) || 15 * 60 * 1000;
+      if (ageMs < stuckMs) throw new BadRequestException('Already rendering');
+    } else if (!['AUDIO_READY', 'RENDERED'].includes(creation.status)) {
+      throw new BadRequestException(
+        `Render the video once before using the scene editor (status ${creation.status})`,
+      );
+    }
+    await this.prisma.videoCreation.update({
+      where: { id },
+      data: { failureReason: null },
+    });
+    await this.studioQueue.add(
+      JOB_RENDER_CREATION,
+      { creationId: id },
+      {
+        jobId: `creation-${id}-render-${Date.now()}`,
+        attempts: 1,
+        removeOnComplete: { age: 86400 },
+      },
+    );
+    return { ok: true };
   }
 
   /** Re-run the pipeline from the script stage after edits. */

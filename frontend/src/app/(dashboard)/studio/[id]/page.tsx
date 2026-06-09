@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
@@ -8,10 +8,16 @@ import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { StageProgress } from '@/components/studio/StageProgress';
-import { VideoCreation, Scene, STATUS_LABELS } from '@/lib/studio-types';
+import {
+  VideoCreation,
+  Scene,
+  STATUS_LABELS,
+  MOTION_OPTIONS,
+  DEFAULT_MOTION_EFFECT,
+} from '@/lib/studio-types';
 import { formatDate } from '@/lib/utils';
 import { toast } from 'sonner';
-import { RefreshCw, CheckCircle2, ChevronLeft } from 'lucide-react';
+import { RefreshCw, CheckCircle2, ChevronLeft, Upload, Clapperboard } from 'lucide-react';
 
 export default function StudioWizardPage() {
   const params = useParams<{ id: string }>();
@@ -79,6 +85,58 @@ export default function StudioWizardPage() {
     onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? 'Refresh failed'),
     onSettled: () => setRefreshingIndex(null),
   });
+
+  // Per-scene custom image upload. A hidden file input per scene is triggered by
+  // the "Upload Image" button; the chosen file is POSTed as multipart and the
+  // returned scene merged back so the preview swaps immediately.
+  const fileInputs = useRef<Record<number, HTMLInputElement | null>>({});
+  const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
+  const uploadImage = useMutation({
+    mutationFn: async ({ scene, file }: { scene: Scene; file: File }) => {
+      const form = new FormData();
+      form.append('file', file);
+      return (
+        await api.post<Scene>(`/studio/creations/${id}/scenes/${scene.index}/image`, form)
+      ).data;
+    },
+    onMutate: ({ scene }) => setUploadingIndex(scene.index),
+    onSuccess: (updated) => {
+      setScenes((prev) =>
+        (prev ?? []).map((s) =>
+          s.index === updated.index
+            ? {
+                ...s,
+                imageUrl: updated.imageUrl,
+                customImagePath: updated.customImagePath,
+                videoUrl: undefined,
+              }
+            : s,
+        ),
+      );
+      toast.success('Image uploaded');
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? 'Upload failed'),
+    onSettled: () => setUploadingIndex(null),
+  });
+
+  // "Save & Render": persist all scene edits (narration, duration, motion
+  // effect, keyword) then trigger the render-only pipeline that re-renders with
+  // the edited scene data. Custom images were already saved on upload.
+  const saveAndRender = useMutation({
+    mutationFn: async () => {
+      await api.post(`/studio/creations/${id}/script`, { scenes: scenes ?? [] });
+      return (await api.post(`/studio/creations/${id}/render`)).data;
+    },
+    onSuccess: () => {
+      toast.success('Saved — rendering your video');
+      qc.invalidateQueries({ queryKey: ['creation', id] });
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? 'Render failed'),
+  });
+  // The scene editor can render once the assets exist (the video has been
+  // rendered at least once). Mirrors the backend status guard.
+  const canRender = creation && ['AUDIO_READY', 'RENDERED'].includes(creation.status);
+  const isRendering = creation?.status === 'RENDERING';
 
   if (!creation) {
     return <div className="text-sm text-muted">Loading…</div>;
@@ -173,6 +231,30 @@ export default function StudioWizardPage() {
                     <span>Scene {idx + 1}</span>
                     <span>{scene.durationSeconds}s</span>
                   </div>
+                  <input
+                    ref={(el) => {
+                      fileInputs.current[scene.index] = el;
+                    }}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) uploadImage.mutate({ scene, file });
+                      e.target.value = '';
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="mt-2 w-full"
+                    onClick={() => fileInputs.current[scene.index]?.click()}
+                    disabled={!canEditScript || uploadingIndex !== null}
+                    loading={uploadingIndex === scene.index}
+                    title="Upload a custom JPG, PNG, or WEBP image for this scene"
+                  >
+                    <Upload className="size-3" /> Upload Image
+                  </Button>
                 </div>
                 <div className="space-y-2">
                   <textarea
@@ -226,9 +308,46 @@ export default function StudioWizardPage() {
                       disabled={!canEditScript}
                     />
                   </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-[10px] uppercase tracking-wide text-muted">
+                      Motion
+                    </label>
+                    <select
+                      value={scene.motionEffect ?? DEFAULT_MOTION_EFFECT}
+                      onChange={(e) => {
+                        const next = [...scenes];
+                        next[idx] = { ...scene, motionEffect: e.target.value as Scene['motionEffect'] };
+                        setScenes(next);
+                      }}
+                      className="h-8 flex-1 rounded border border-border bg-bg px-2 text-xs"
+                      disabled={!canEditScript}
+                      title="Motion effect applied to this scene's image when rendering"
+                    >
+                      {MOTION_OPTIONS.map((m) => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
             ))}
+          </div>
+          <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
+            <p className="text-xs text-muted">
+              {canRender
+                ? 'Saves image, motion, and duration edits, then re-renders the video.'
+                : 'Available once the video has finished its first render.'}
+            </p>
+            <Button
+              onClick={() => saveAndRender.mutate()}
+              disabled={!canRender || saveAndRender.isPending || isRendering}
+              loading={saveAndRender.isPending || isRendering}
+            >
+              <Clapperboard className="size-4" />
+              {creation.status === 'RENDERED' || creation.status === 'APPROVED'
+                ? 'Save & Re-render'
+                : 'Save & Render'}
+            </Button>
           </div>
         </Card>
       )}

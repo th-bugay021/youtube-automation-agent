@@ -7,3 +7,4 @@ export const JOB_PUBLISH_VIDEO = 'publish-video';
 export const JOB_REFRESH_ANALYTICS = 'refresh-analytics';
 export const JOB_FETCH_CHANNEL_STATS = 'fetch-channel-stats';
 export const JOB_RUN_CREATION = 'run-creation';
+export const JOB_RENDER_CREATION = 'render-creation';

@@ -300,7 +300,10 @@ model VideoCreation {
   // Result of channel intelligence analysis (tone, format, voice, etc.)
   channelStyle    Json?
 
-  // Array of {index, narration, durationSeconds, imageKeyword, imageUrl, audioUrl}
+  // Array of {index, narration, durationSeconds, imageKeyword, imageUrl,
+  // videoUrl, audioUrl, motionEffect, customImagePath}. motionEffect is the
+  // per-scene Ken Burns-style motion (default 'ken-burns'); customImagePath is
+  // the Supabase path of a user-uploaded image that overrides the stock asset.
   scenes          Json?
 
   // Storage URLs (Supabase signed URLs)

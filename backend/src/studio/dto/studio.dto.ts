@@ -2,6 +2,7 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -12,6 +13,22 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { VideoStyle } from '@prisma/client';
+
+/**
+ * Per-scene motion (Ken Burns-style) effect applied to still images at render
+ * time. `ken-burns` is the default for every scene. See RendererService for the
+ * Shotstack transforms each value maps to.
+ */
+export const MOTION_EFFECTS = [
+  'static',
+  'zoom-in',
+  'zoom-out',
+  'pan-left',
+  'pan-right',
+  'ken-burns',
+] as const;
+
+export type MotionEffect = (typeof MOTION_EFFECTS)[number];
 
 export class CreateCreationDto {
   @IsString()
@@ -70,6 +87,10 @@ export class SceneEditDto {
   @IsString()
   @MaxLength(120)
   imageKeyword?: string;
+
+  @IsOptional()
+  @IsIn(MOTION_EFFECTS)
+  motionEffect?: MotionEffect;
 }
 
 export class UpdateScriptDto {

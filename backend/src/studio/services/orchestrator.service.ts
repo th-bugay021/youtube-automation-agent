@@ -209,6 +209,7 @@ export class OrchestratorService {
               RENDER_URL_TTL,
             ),
             durationSeconds: sa.scene.durationSeconds,
+            motionEffect: sa.scene.motionEffect ?? 'ken-burns',
           };
         }),
       );
@@ -220,14 +221,8 @@ export class OrchestratorService {
 
       // Copy the hosted MP4 into Supabase so the downstream YouTube-upload
       // pipeline (which reads `supabase://<id>/final.mp4`) is unchanged.
-      const renderResp = await fetch(result.videoUrl);
-      if (!renderResp.ok) {
-        throw new Error(`Failed to download Shotstack output: ${renderResp.status}`);
-      }
-      const videoBuffer = Buffer.from(await renderResp.arrayBuffer());
-
+      await this.downloadToFinal(creationId, result.videoUrl);
       const renderPath = `${creationId}/final.mp4`;
-      await this.storage.upload(renderPath, videoBuffer, 'video/mp4');
       // Thumbnail: a stock still (slideshow reuses scene 1's image; faceless
       // fetched one separately). Skipped if none was available.
       let thumbnailUrl: string | null = null;
@@ -260,22 +255,134 @@ export class OrchestratorService {
         });
       }
     } catch (err) {
-      const message = (err as Error).message ?? 'Unknown failure';
-      this.logger.error({ err, creationId }, 'Creation pipeline failed');
-      const c = await this.prisma.videoCreation.update({
-        where: { id: creationId },
-        data: { status: CreationStatus.FAILED, failureReason: message },
-        include: { channel: true },
-      });
-      await this.notifications.emit({
-        userId: c.channel.userId,
-        type: 'STUDIO_RENDER_FAILED',
-        title: `Studio render failed: ${c.topic}`,
-        body: message.slice(0, 300),
-        data: { creationId },
-      });
+      await this.markFailed(creationId, err);
       throw err;
     }
+  }
+
+  /**
+   * Render-only path used by the Scene Editor's "Save & Render". Re-renders the
+   * already-generated scenes (with any user-edited images, motion effects, and
+   * durations) without re-running the script, image-fetch, or audio stages. The
+   * scene assets it reads live at the deterministic Supabase paths the full
+   * pipeline already wrote; a user-uploaded image overrides via customImagePath.
+   */
+  async renderFromScenes(creationId: string): Promise<void> {
+    try {
+      await this.storage.ensureBucket();
+      const creation = await this.prisma.videoCreation.findUnique({ where: { id: creationId } });
+      if (!creation) throw new Error(`Creation ${creationId} not found`);
+      const scenes = (creation.scenes as any[] | null) ?? [];
+      if (scenes.length === 0) {
+        throw new Error('No scenes to render — generate the video before using the scene editor');
+      }
+
+      await this.prisma.videoCreation.update({
+        where: { id: creationId },
+        data: { status: CreationStatus.RENDERING, failureReason: null },
+      });
+
+      // Shotstack fetches assets over HTTP, so sign URLs valid well past the
+      // render+poll window. Resolve each scene's visual from the deterministic
+      // storage paths the full pipeline writes, preferring a user-uploaded image.
+      const RENDER_URL_TTL = 2 * 60 * 60; // 2h
+      const sceneRenderInputs = await Promise.all(
+        scenes.map(async (scene) => {
+          const index = scene.index;
+          let imageUrl: string | undefined;
+          let videoUrl: string | undefined;
+          if (scene.customImagePath) {
+            imageUrl = await this.storage.signedUrl(scene.customImagePath, RENDER_URL_TTL);
+          } else if (scene.videoUrl) {
+            videoUrl = await this.storage.signedUrl(
+              `${creationId}/clips/scene-${index}.mp4`,
+              RENDER_URL_TTL,
+            );
+          } else {
+            imageUrl = await this.storage.signedUrl(
+              `${creationId}/images/scene-${index}.jpg`,
+              RENDER_URL_TTL,
+            );
+          }
+          return {
+            imageUrl,
+            videoUrl,
+            audioUrl: await this.storage.signedUrl(
+              `${creationId}/audio/scene-${index}.mp3`,
+              RENDER_URL_TTL,
+            ),
+            durationSeconds: Number(scene.durationSeconds) || 5,
+            motionEffect: scene.motionEffect ?? 'ken-burns',
+          };
+        }),
+      );
+      const totalSeconds = sceneRenderInputs.reduce((a, s) => a + s.durationSeconds, 0);
+
+      const result = await this.renderer.render({
+        scenes: sceneRenderInputs,
+        musicUrl: creation.musicUrl,
+        totalDurationSeconds: totalSeconds,
+      });
+
+      await this.downloadToFinal(creationId, result.videoUrl);
+
+      await this.prisma.videoCreation.update({
+        where: { id: creationId },
+        data: {
+          renderedUrl: await this.storage.signedUrl(`${creationId}/final.mp4`, 7 * 24 * 3600),
+          finalDurationSeconds: result.durationSeconds,
+          status: CreationStatus.RENDERED,
+        },
+      });
+
+      const finalCreation = await this.prisma.videoCreation.findUnique({
+        where: { id: creationId },
+        include: { channel: true },
+      });
+      if (finalCreation) {
+        await this.notifications.emit({
+          userId: finalCreation.channel.userId,
+          type: 'STUDIO_RENDER_READY',
+          title: `Video re-rendered: ${finalCreation.topic}`,
+          data: { creationId },
+        });
+      }
+    } catch (err) {
+      await this.markFailed(creationId, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Downloads a hosted Shotstack MP4 and uploads it to `<id>/final.mp4` in
+   * Supabase, the path the YouTube-upload pipeline reads. Shared by the full
+   * and render-only pipelines.
+   */
+  private async downloadToFinal(creationId: string, hostedUrl: string): Promise<void> {
+    const renderResp = await fetch(hostedUrl);
+    if (!renderResp.ok) {
+      throw new Error(`Failed to download Shotstack output: ${renderResp.status}`);
+    }
+    const videoBuffer = Buffer.from(await renderResp.arrayBuffer());
+    await this.storage.upload(`${creationId}/final.mp4`, videoBuffer, 'video/mp4');
+  }
+
+  /** Flips a creation to FAILED, records the reason, and notifies the owner. */
+  private async markFailed(creationId: string, err: unknown): Promise<void> {
+    const message = (err as Error).message ?? 'Unknown failure';
+    this.logger.error({ err, creationId }, 'Creation pipeline failed');
+    const c = await this.prisma.videoCreation.update({
+      where: { id: creationId },
+      data: { status: CreationStatus.FAILED, failureReason: message },
+      include: { channel: true },
+    });
+    await this.notifications.emit({
+      userId: c.channel.userId,
+      type: 'STUDIO_RENDER_FAILED',
+      title: `Studio render failed: ${c.topic}`,
+      body: message.slice(0, 300),
+      data: { creationId },
+    });
   }
 
   private async setStatus(id: string, status: CreationStatus) {
